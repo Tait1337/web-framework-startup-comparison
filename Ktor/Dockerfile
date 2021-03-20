@@ -19,7 +19,7 @@ RUN native-image \
 #####
 # The actual image to run
 #####
-FROM alpine:3.12
+FROM alpine:3.13
 LABEL maintainer="tait1337"
 RUN apk --no-cache add ca-certificates
 

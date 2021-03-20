@@ -14,7 +14,7 @@ This comparison shows the different startup-performance 🏃 with a common simpl
 🌎 **Container** Run everywhere due to light docker container distribution<br/>
 <br/>
 <br/>
-Native build compilation was done with GraalVM 20.3.0 (only Quarkus still use GraalVM 20.2.0).<br/>
+Native build compilation was done with GraalVM 21.<br/>
 Non-Native JVM build compilation and runtime was done with AdoptOpenJDK 11.0.7 on my Acer Aspire ES1-572 (4 Core x 2,5GHz, 16GB RAM, Windows 10, x64).<br/>
 No application configuration or JVM performance tuning has been applied.<br/>
 
@@ -34,9 +34,9 @@ No application configuration or JVM performance tuning has been applied.<br/>
 <tbody>
 <tr>
 <td>Http4k</td>
-<td>3.278.0</td>
-<td>8,32 MB</td>
-<td>36 MB</td>
+<td>4.4.2.0</td>
+<td>8,47 MB</td>
+<td>36.20 MB</td>
 <td>163 ms</td>
 <td>40 MB</td>
 <td>6.8 ms</td>
@@ -44,9 +44,9 @@ No application configuration or JVM performance tuning has been applied.<br/>
 </tr>
 <tr>
 <td>Ktor</td>
-<td>1.4.2</td>
-<td>10,87 MB</td>
-<td>50.3 MB</td>
+<td>1.5.2</td>
+<td>10,80 MB</td>
+<td>48.7 MB</td>
 <td>349.7 ms</td>
 <td>54.67 MB</td>
 <td>23.8 ms</td>
@@ -54,9 +54,9 @@ No application configuration or JVM performance tuning has been applied.<br/>
 </tr>
 <tr>
 <td>Quarkus</td>
-<td>1.10.0</td>
-<td>13,52 MB</td>
-<td>139 MB**</td>
+<td>1.12.2</td>
+<td>14,90 MB</td>
+<td>140 MB**</td>
 <td>1668.3 ms</td>
 <td>84 MB</td>
 <td>51.6 ms</td>
@@ -64,9 +64,9 @@ No application configuration or JVM performance tuning has been applied.<br/>
 </tr>
 <tr>
 <td>Spring</td>
-<td>2.4.0</td>
-<td>25,01 MB</td>
-<td>90 MB</td>
+<td>2.4.4</td>
+<td>24,70 MB</td>
+<td>92.2 MB</td>
 <td>4828.2 ms</td>
 <td>212.67 MB</td>
 <td>86 ms</td>

@@ -6,11 +6,9 @@ A Kubernetes Native Java stack tailored for OpenJDK HotSpot and GraalVM, crafted
 Web Engine: Vert.X, but you can switch to: Undertow, Netty
 JSON Serializer: JSON-B, but you can switch to: Jackson
 
-Quarkus needs to catch up with Support for GraalVM 20.3 and Kotlin 1.4.
-
 ## Build with Gradle
 ```
-./gradlew buildNative -Dquarkus.native.container-build=true
+./gradlew build -Dquarkus.package.type=native -Dquarkus.native.container-build=true
 ./docker build -f src/main/docker/Dockerfile.native -t quarkus:0.0.1-SNAPSHOT .
 ```
 ## Run via JVM

@@ -1,8 +1,8 @@
 plugins {
     application
-    kotlin("jvm") version "1.4.10"
-    kotlin("plugin.serialization") version "1.4.10"
-    id("com.github.johnrengelman.shadow") version "5.2.0"
+    kotlin("jvm") version "1.4.31"
+    kotlin("plugin.serialization") version "1.4.31"
+    id("com.github.johnrengelman.shadow") version "6.1.0"
 }
 
 group = "com.example"
@@ -16,11 +16,10 @@ repositories {
 }
 
 dependencies {
-    implementation(kotlin("stdlib-jdk8"))
     implementation("ch.qos.logback:logback-classic:1.2.3")
-    implementation("io.ktor:ktor-server-cio:1.4.2") // implementation("io.ktor:ktor-server-netty:1.4.2")
-    implementation("io.ktor:ktor-serialization:1.4.2")
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.0.1")
+    implementation("io.ktor:ktor-server-cio:1.5.2") // implementation("io.ktor:ktor-server-netty:1.4.2")
+    implementation("io.ktor:ktor-serialization:1.5.2")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.1.0")
 }
 
 tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {

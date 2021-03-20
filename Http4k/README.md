@@ -6,8 +6,6 @@ http4k is a lightweight but fully-featured HTTP toolkit written in pure Kotlin t
 Web Engine: Tomcat, but you can switch to: Jetty, CIO, Netty, Ratpack, Undertow, SunHttp
 JSON Serializer: Jackson, but you can switch to: Argo, GSON, Kotlinx.Serialization, Moshi
 
-Http4k might come up in Future with Coroutine Support: https://github.com/http4k/http4k/issues/94
-
 ## Build with Gradle
 ```
 ./gradlew build

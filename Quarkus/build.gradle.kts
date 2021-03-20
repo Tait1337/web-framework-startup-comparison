@@ -1,6 +1,6 @@
 plugins {
-	id("io.quarkus")  version "1.10.0.Final"
-	kotlin("jvm") version "1.4.10"
+	id("io.quarkus") version "1.12.2.Final"
+	kotlin("jvm") version "1.4.31"
 }
 
 group = "com.example"
@@ -12,10 +12,9 @@ repositories {
 }
 
 dependencies {
+	implementation(enforcedPlatform("io.quarkus:quarkus-universe-bom:1.12.2.Final"))
 	implementation("io.quarkus:quarkus-resteasy-jsonb")
-	implementation(enforcedPlatform("io.quarkus:quarkus-bom:1.10.0.Final"))
 	implementation("io.quarkus:quarkus-resteasy")
-	implementation(kotlin("stdlib-jdk8"))
 }
 
 tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
