@@ -1,7 +1,7 @@
 #####
 # The builder image to build the native app
 #####
-FROM findepi/graalvm:java11-native as builder
+FROM findepi/graalvm:java17-native as builder
 LABEL stage=builder
 
 WORKDIR /builder
@@ -19,7 +19,7 @@ RUN native-image \
 #####
 # The actual image to run
 #####
-FROM alpine:3.13
+FROM alpine:3.16
 LABEL maintainer="tait1337"
 RUN apk --no-cache add ca-certificates
 

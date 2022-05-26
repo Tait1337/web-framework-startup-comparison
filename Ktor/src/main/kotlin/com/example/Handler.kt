@@ -1,14 +1,15 @@
 package com.example
 
-import io.ktor.application.*
 import io.ktor.http.*
-import io.ktor.response.*
-import kotlinx.serialization.encodeToString
+import io.ktor.server.application.*
+import io.ktor.server.response.*
+import kotlinx.datetime.Clock
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.toLocalDateTime
 import kotlinx.serialization.json.Json
-import java.time.LocalDateTime
 
 suspend fun getGreetHandler(call: ApplicationCall) {
-    val greeting = Greeting(LocalDateTime.now(), call.parameters["name"]!!, "Hello!")
+    val greeting = Greeting(Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault()), call.parameters["name"]!!, "Hello!")
     //https://github.com/Kotlin/kotlinx.serialization/issues/1125
     call.respondText(Json.encodeToString(Greeting.serializer(), greeting), ContentType.Application.Json, HttpStatusCode.OK) //call.respond(HttpStatusCode.OK, greeting)
 }

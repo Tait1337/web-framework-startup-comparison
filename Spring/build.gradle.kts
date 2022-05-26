@@ -1,41 +1,46 @@
+import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
+import org.springframework.boot.gradle.tasks.bundling.BootBuildImage
+
 plugins {
-	kotlin("jvm") version "1.4.31"
-	kotlin("plugin.spring") version "1.4.31"
-	id("org.springframework.boot") version "2.4.4"
+	application
+	id("org.springframework.boot") version "2.7.0"
 	id("io.spring.dependency-management") version "1.0.11.RELEASE"
-	id("org.springframework.experimental.aot") version "0.9.0"
+	kotlin("jvm") version "1.6.21"
+	kotlin("plugin.spring") version "1.6.21"
+	id("org.springframework.experimental.aot") version "0.12.0-SNAPSHOT"
 }
 
-group = "com.example"
-version = "0.0.1-SNAPSHOT"
-java.sourceCompatibility = JavaVersion.VERSION_11
+application {
+	mainClass.set("com.example.AppKt")
+	group = "com.example"
+	version = "0.0.1-SNAPSHOT"
+	java.sourceCompatibility = JavaVersion.VERSION_17
+}
 
 repositories {
-	mavenCentral()
 	maven { url = uri("https://repo.spring.io/release") }
+	maven { url = uri("https://repo.spring.io/snapshot") }
+	mavenCentral()
 }
 
 dependencies {
 	implementation("org.springframework.boot:spring-boot-starter-webflux")
 	implementation("com.fasterxml.jackson.module:jackson-module-kotlin")
 	implementation("io.projectreactor.kotlin:reactor-kotlin-extensions")
-	implementation("org.jetbrains.kotlinx:kotlinx-coroutines-reactor")
-	implementation("org.jetbrains.kotlin:kotlin-stdlib-jdk8")
 	implementation("org.jetbrains.kotlin:kotlin-reflect")
-	implementation("org.springframework.experimental:spring-native:0.9.0")
+	implementation("org.jetbrains.kotlinx:kotlinx-coroutines-reactor")
 }
 
-tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
+tasks.withType<KotlinCompile> {
 	kotlinOptions {
 		freeCompilerArgs = listOf("-Xjsr305=strict")
-		jvmTarget = "11"
+		jvmTarget = "17"
 	}
 }
 
-tasks.withType<org.springframework.boot.gradle.tasks.bundling.BootBuildImage> {
+tasks.withType<BootBuildImage> {
 	builder = "paketobuildpacks/builder:tiny"
 	environment = mapOf(
-			"BP_NATIVE_IMAGE" to "true",
-			"BP_NATIVE_IMAGE_BUILD_ARGUMENTS" to "-Dspring.spel.ignore=true -Dspring.native.remove-yaml-support=true"
+		"BP_NATIVE_IMAGE" to "true"
 	)
 }

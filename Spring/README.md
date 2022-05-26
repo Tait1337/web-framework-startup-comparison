@@ -12,16 +12,16 @@ JSON Serializer: Jackson, but you can switch to: GSON, Kotlinx.Serialization
 ```
 ## Run via JVM
 ```
-./java -jar build/libs/spring-0.0.1-SNAPSHOT.jar
+java -jar build/libs/spring-0.0.1-SNAPSHOT.jar
 ```
 
 ## Run as Docker Container
 ```
-./docker run -i --rm -p 8080:8080 spring:0.0.1-SNAPSHOT
+docker run -i --rm -p 8080:8080 spring:0.0.1-SNAPSHOT
 ```
 
 ## Call REST-Endpoint
 ```
 curl http://localhost:8080/greet/John
-// returns: {"timestamp":"2020-11-27T12:10:53.6357915","name":"John","message":"Hello!"}
+// returns: {"timestamp":"2022-05-26T18:10:50.855098","name":"John","message":"Hello!"}
 ```

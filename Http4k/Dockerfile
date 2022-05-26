@@ -1,23 +1,25 @@
 #####
 # The builder image to build the native app
 #####
-FROM findepi/graalvm:java11-native as builder
+FROM findepi/graalvm:java17-native as builder
 LABEL stage=builder
 
 WORKDIR /builder
 COPY ./build/libs/http4k-0.0.1-SNAPSHOT-all.jar ./app.jar
 COPY graal-reflection-configuration.json ./graal-reflection-configuration.json
+COPY graal-resources-configuration.json ./graal-resources-configuration.json
 RUN native-image \
     --no-fallback \
     --static \
     -H:IncludeResources="(.*.properties)|(static/.*)|(META-INF/.*)" \
     -H:ReflectionConfigurationFiles=graal-reflection-configuration.json \
+    -H:ResourceConfigurationFiles=graal-resources-configuration.json \
     -jar app.jar
 
 #####
 # The actual image to run
 #####
-FROM alpine:3.13
+FROM alpine:3.16
 LABEL maintainer="tait1337"
 RUN apk --no-cache add ca-certificates
 

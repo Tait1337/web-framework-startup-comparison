@@ -9,20 +9,20 @@ JSON Serializer: Jackson, but you can switch to: Argo, GSON, Kotlinx.Serializati
 ## Build with Gradle
 ```
 ./gradlew build
-./docker build -t http4k:0.0.1-SNAPSHOT .
+docker build -t http4k:0.0.1-SNAPSHOT .
 ```
 ## Run via JVM
 ```
-./java -jar build/libs/http4k-0.0.1-SNAPSHOT-all.jar
+java -jar build/libs/http4k-0.0.1-SNAPSHOT-all.jar
 ```
 
 ## Run as Docker Container
 ```
-./docker run -i --rm -p 8080:8080 http4k:0.0.1-SNAPSHOT
+docker run -i --rm -p 8080:8080 http4k:0.0.1-SNAPSHOT
 ```
 
 ## Call REST-Endpoint
 ```
 curl http://localhost:8080/greet/John
-// returns: {"timestamp":"2020-11-27T12:10:53.6357915","name":"John","message":"Hello!"}
+// returns: {"timestamp":"2022-05-26T14:13:30.878312","name":"John","message":"Hello!"}
 ```

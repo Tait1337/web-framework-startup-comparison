@@ -1,36 +1,38 @@
 plugins {
     application
-    kotlin("jvm") version "1.4.31"
-    kotlin("plugin.serialization") version "1.4.31"
-    id("com.github.johnrengelman.shadow") version "6.1.0"
+    kotlin("jvm") version "1.6.21"
+    kotlin("plugin.serialization") version "1.6.21"
+    id("com.github.johnrengelman.shadow") version "7.1.2"
 }
 
-group = "com.example"
-version = "0.0.1-SNAPSHOT"
-java.sourceCompatibility = JavaVersion.VERSION_11
-application.mainClassName = "com.example.AppKt"
+application {
+    mainClass.set("com.example.AppKt")
+    group = "com.example"
+    version = "0.0.1-SNAPSHOT"
+    java.sourceCompatibility = JavaVersion.VERSION_17
+}
 
 repositories {
     mavenCentral()
-    jcenter()
 }
 
 dependencies {
-    implementation("ch.qos.logback:logback-classic:1.2.3")
-    implementation("io.ktor:ktor-server-cio:1.5.2") // implementation("io.ktor:ktor-server-netty:1.4.2")
-    implementation("io.ktor:ktor-serialization:1.5.2")
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.1.0")
+    implementation("ch.qos.logback:logback-classic:1.2.11")
+    implementation("io.ktor:ktor-server-cio:2.0.1")
+    implementation("io.ktor:ktor-server-content-negotiation:2.0.1")
+    implementation("io.ktor:ktor-serialization-kotlinx-json:2.0.1")
+    implementation("org.jetbrains.kotlinx:kotlinx-datetime-jvm:0.3.3")
 }
 
 tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
     kotlinOptions {
-        jvmTarget = "11"
+        jvmTarget = "17"
     }
 }
 
 tasks.shadowJar {
     manifest {
-        attributes("Main-Class" to application.mainClassName)
+        attributes("Main-Class" to application.mainClass)
     }
     mergeServiceFiles()
 }
