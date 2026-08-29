@@ -1,0 +1,820 @@
+name: Web Framework Benchmark
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  JAVA_VERSION: "17"
+  GRAALVM_VERSION: "17"
+  PORT: "8080"
+  RUNS: "7"
+  STARTUP_TIMEOUT: "120"
+
+jobs:
+  benchmark:
+    name: ${{ matrix.framework }} / ${{ matrix.runtime }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        framework:
+          - Spring
+          - Quarkus
+          - Ktor
+          - Http4k
+
+        runtime:
+          - jvm
+          - native
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: gradle
+
+      - name: Setup GraalVM
+        if: matrix.runtime == 'native'
+        uses: graalvm/setup-graalvm@v1
+        with:
+          java-version: ${{ env.GRAALVM_VERSION }}
+          distribution: graalvm-community
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: gradle
+
+      - name: Show environment
+        run: |
+          echo "Framework: ${{ matrix.framework }}"
+          echo "Runtime:   ${{ matrix.runtime }}"
+          echo "Java:"
+          java -version
+
+          echo
+          echo "Native Image:"
+          native-image --version 2>/dev/null || true
+
+          echo
+          echo "CPU:"
+          nproc
+          lscpu | grep -E 'Model name|CPU\(s\)' || true
+
+          echo
+          echo "Memory:"
+          free -h
+
+      # ============================================================
+      # JVM BUILD
+      # ============================================================
+
+      - name: Build JVM
+        if: matrix.runtime == 'jvm'
+        id: build_jvm
+        working-directory: ${{ matrix.framework }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          START=$(date +%s%N)
+
+          ./gradlew clean build --no-daemon
+
+          END=$(date +%s%N)
+
+          BUILD_MS=$(( (END - START) / 1000000 ))
+
+          echo "Build time: ${BUILD_MS} ms"
+          echo "build_ms=${BUILD_MS}" >> "$GITHUB_OUTPUT"
+
+      # ============================================================
+      # NATIVE BUILD
+      # ============================================================
+
+      - name: Build Native
+        if: matrix.runtime == 'native'
+        id: build_native
+        working-directory: ${{ matrix.framework }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          START=$(date +%s%N)
+
+          case "${{ matrix.framework }}" in
+
+            Spring)
+              ./gradlew clean bootBuildImage --no-daemon
+              ;;
+
+            Quarkus)
+              ./gradlew clean build \
+                -Dquarkus.native.enabled=true \
+                -Dquarkus.native.container-build=false \
+                --no-daemon
+              ;;
+
+            Ktor|Http4k)
+              ./gradlew clean shadowJar --no-daemon
+              ;;
+
+          esac
+
+          END=$(date +%s%N)
+
+          BUILD_MS=$(( (END - START) / 1000000 ))
+
+          echo "Native build time: ${BUILD_MS} ms"
+          echo "build_ms=${BUILD_MS}" >> "$GITHUB_OUTPUT"
+
+      # ============================================================
+      # JVM ARTIFACT
+      # ============================================================
+
+      - name: Find JVM artifact
+        if: matrix.runtime == 'jvm'
+        id: artifact_jvm
+        working-directory: ${{ matrix.framework }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          case "${{ matrix.framework }}" in
+            Spring)
+              ARTIFACT=$(find build/libs \
+                -type f \
+                -name "*.jar" \
+                ! -name "*plain.jar" \
+                | head -n 1)
+              ;;
+
+            Quarkus)
+              ARTIFACT="build/quarkus-app/quarkus-run.jar"
+              ;;
+
+            Ktor|Http4k)
+              ARTIFACT=$(find build/libs \
+                -type f \
+                -name "*.jar" \
+                ! -name "*plain.jar" \
+                | head -n 1)
+              ;;
+          esac
+
+          if [[ ! -f "$ARTIFACT" ]]; then
+            echo "::error::Could not find JVM artifact"
+            find build -type f | sort
+            exit 1
+          fi
+
+          SIZE_BYTES=$(stat -c%s "$ARTIFACT")
+          SIZE_MB=$(awk "BEGIN { printf \"%.2f\", ${SIZE_BYTES}/1024/1024 }")
+
+          echo "artifact=$ARTIFACT" >> "$GITHUB_OUTPUT"
+          echo "size_bytes=$SIZE_BYTES" >> "$GITHUB_OUTPUT"
+          echo "size_mb=$SIZE_MB" >> "$GITHUB_OUTPUT"
+
+      # ============================================================
+      # QUARKUS NATIVE ARTIFACT
+      # ============================================================
+
+      - name: Find Quarkus native artifact
+        if: matrix.runtime == 'native' && matrix.framework == 'Quarkus'
+        id: artifact_quarkus
+        working-directory: Quarkus
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ARTIFACT=$(find build \
+            -maxdepth 3 \
+            -type f \
+            -executable \
+            ! -name "*.jar" \
+            | head -n 1)
+
+          if [[ -z "${ARTIFACT:-}" ]]; then
+            echo "::error::Could not find Quarkus native executable"
+            find build -type f | sort
+            exit 1
+          fi
+
+          SIZE_BYTES=$(stat -c%s "$ARTIFACT")
+          SIZE_MB=$(awk "BEGIN { printf \"%.2f\", ${SIZE_BYTES}/1024/1024 }")
+
+          echo "artifact=$PWD/$ARTIFACT" >> "$GITHUB_OUTPUT"
+          echo "size_bytes=$SIZE_BYTES" >> "$GITHUB_OUTPUT"
+          echo "size_mb=$SIZE_MB" >> "$GITHUB_OUTPUT"
+
+      # ============================================================
+      # KTOR NATIVE
+      # ============================================================
+
+      - name: Build Ktor native executable
+        if: matrix.runtime == 'native' && matrix.framework == 'Ktor'
+        id: ktor_native
+        working-directory: Ktor
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          JAR=$(find build/libs \
+            -type f \
+            -name "*.jar" \
+            ! -name "*plain.jar" \
+            | head -n 1)
+
+          native-image \
+            --no-fallback \
+            --enable-url-protocols=http \
+            -H:+ReportExceptionStackTraces \
+            -jar "$JAR" \
+            app
+
+          SIZE_BYTES=$(stat -c%s app)
+          SIZE_MB=$(awk "BEGIN { printf \"%.2f\", ${SIZE_BYTES}/1024/1024 }")
+
+          echo "artifact=$PWD/app" >> "$GITHUB_OUTPUT"
+          echo "size_bytes=$SIZE_BYTES" >> "$GITHUB_OUTPUT"
+          echo "size_mb=$SIZE_MB" >> "$GITHUB_OUTPUT"
+
+      # ============================================================
+      # HTTP4K NATIVE
+      # ============================================================
+
+      - name: Build Http4k native executable
+        if: matrix.runtime == 'native' && matrix.framework == 'Http4k'
+        id: http4k_native
+        working-directory: Http4k
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          JAR=$(find build/libs \
+            -type f \
+            -name "*.jar" \
+            ! -name "*plain.jar" \
+            | head -n 1)
+
+          native-image \
+            --no-fallback \
+            --enable-url-protocols=http \
+            -H:+ReportExceptionStackTraces \
+            -jar "$JAR" \
+            app
+
+          SIZE_BYTES=$(stat -c%s app)
+          SIZE_MB=$(awk "BEGIN { printf \"%.2f\", ${SIZE_BYTES}/1024/1024 }")
+
+          echo "artifact=$PWD/app" >> "$GITHUB_OUTPUT"
+          echo "size_bytes=$SIZE_BYTES" >> "$GITHUB_OUTPUT"
+          echo "size_mb=$SIZE_MB" >> "$GITHUB_OUTPUT"
+
+      # ============================================================
+      # BENCHMARK JVM
+      # ============================================================
+
+      - name: Benchmark JVM
+        if: matrix.runtime == 'jvm'
+        id: benchmark_jvm
+        working-directory: ${{ matrix.framework }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ARTIFACT="${{ steps.artifact_jvm.outputs.artifact }}"
+
+          STARTUP_VALUES=""
+          MEMORY_VALUES=""
+
+          for RUN in $(seq 1 "$RUNS"); do
+
+            echo "JVM run $RUN / $RUNS"
+
+            rm -f /tmp/framework.log
+
+            START=$(date +%s%N)
+
+            java -jar "$ARTIFACT" \
+              > /tmp/framework.log 2>&1 &
+
+            PID=$!
+
+            READY=0
+
+            for SECOND in $(seq 1 "$STARTUP_TIMEOUT"); do
+
+              if curl \
+                --silent \
+                --fail \
+                --max-time 1 \
+                "http://127.0.0.1:${PORT}/greet/John" \
+                > /dev/null 2>&1; then
+
+                END=$(date +%s%N)
+
+                STARTUP_MS=$(( (END - START) / 1000000 ))
+
+                READY=1
+                break
+              fi
+
+              if ! kill -0 "$PID" 2>/dev/null; then
+                break
+              fi
+
+              sleep 1
+            done
+
+            if [[ "$READY" != "1" ]]; then
+              cat /tmp/framework.log || true
+              kill "$PID" 2>/dev/null || true
+              exit 1
+            fi
+
+            sleep 2
+
+            RSS_KB=$(ps -o rss= -p "$PID" | tr -d ' ')
+            RSS_MB=$(awk "BEGIN { printf \"%.2f\", ${RSS_KB}/1024 }")
+
+            STARTUP_VALUES="${STARTUP_VALUES}${STARTUP_MS}"$'\n'
+            MEMORY_VALUES="${MEMORY_VALUES}${RSS_MB}"$'\n'
+
+            echo "Startup: ${STARTUP_MS} ms"
+            echo "Memory:  ${RSS_MB} MB"
+
+            kill "$PID" 2>/dev/null || true
+            wait "$PID" 2>/dev/null || true
+
+            fuser -k "${PORT}/tcp" 2>/dev/null || true
+
+            sleep 1
+          done
+
+          MEDIAN_STARTUP=$(echo "$STARTUP_VALUES" | sort -n | awk '
+            NF { a[++n]=$1 }
+            END {
+              if (n % 2)
+                print a[(n+1)/2]
+              else
+                printf "%.1f", (a[n/2]+a[n/2+1])/2
+            }
+          ')
+
+          P95_STARTUP=$(echo "$STARTUP_VALUES" | sort -n | awk '
+            NF { a[++n]=$1 }
+            END {
+              i=int(n*0.95+0.999)
+              if (i<1) i=1
+              print a[i]
+            }
+          ')
+
+          MEDIAN_MEMORY=$(echo "$MEMORY_VALUES" | sort -n | awk '
+            NF { a[++n]=$1 }
+            END {
+              if (n % 2)
+                printf "%.2f", a[(n+1)/2]
+              else
+                printf "%.2f", (a[n/2]+a[n/2+1])/2
+            }
+          ')
+
+          echo "startup_median_ms=${MEDIAN_STARTUP}" >> "$GITHUB_OUTPUT"
+          echo "startup_p95_ms=${P95_STARTUP}" >> "$GITHUB_OUTPUT"
+          echo "memory_median_mb=${MEDIAN_MEMORY}" >> "$GITHUB_OUTPUT"
+
+      # ============================================================
+      # BENCHMARK NATIVE
+      # ============================================================
+
+      - name: Benchmark Native
+        if: matrix.runtime == 'native' && matrix.framework != 'Spring'
+        id: benchmark_native
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          case "${{ matrix.framework }}" in
+            Quarkus)
+              ARTIFACT="${{ steps.artifact_quarkus.outputs.artifact }}"
+              ;;
+
+            Ktor)
+              ARTIFACT="${{ steps.ktor_native.outputs.artifact }}"
+              ;;
+
+            Http4k)
+              ARTIFACT="${{ steps.http4k_native.outputs.artifact }}"
+              ;;
+          esac
+
+          chmod +x "$ARTIFACT"
+
+          STARTUP_VALUES=""
+          MEMORY_VALUES=""
+
+          for RUN in $(seq 1 "$RUNS"); do
+
+            echo "Native run $RUN / $RUNS"
+
+            rm -f /tmp/framework.log
+
+            START=$(date +%s%N)
+
+            "$ARTIFACT" \
+              > /tmp/framework.log 2>&1 &
+
+            PID=$!
+
+            READY=0
+
+            for SECOND in $(seq 1 "$STARTUP_TIMEOUT"); do
+
+              if curl \
+                --silent \
+                --fail \
+                --max-time 1 \
+                "http://127.0.0.1:${PORT}/greet/John" \
+                > /dev/null 2>&1; then
+
+                END=$(date +%s%N)
+
+                STARTUP_MS=$(( (END - START) / 1000000 ))
+
+                READY=1
+                break
+              fi
+
+              if ! kill -0 "$PID" 2>/dev/null; then
+                break
+              fi
+
+              sleep 1
+            done
+
+            if [[ "$READY" != "1" ]]; then
+              cat /tmp/framework.log || true
+              kill "$PID" 2>/dev/null || true
+              exit 1
+            fi
+
+            sleep 2
+
+            RSS_KB=$(ps -o rss= -p "$PID" | tr -d ' ')
+            RSS_MB=$(awk "BEGIN { printf \"%.2f\", ${RSS_KB}/1024 }")
+
+            STARTUP_VALUES="${STARTUP_VALUES}${STARTUP_MS}"$'\n'
+            MEMORY_VALUES="${MEMORY_VALUES}${RSS_MB}"$'\n'
+
+            echo "Startup: ${STARTUP_MS} ms"
+            echo "Memory:  ${RSS_MB} MB"
+
+            kill "$PID" 2>/dev/null || true
+            wait "$PID" 2>/dev/null || true
+
+            fuser -k "${PORT}/tcp" 2>/dev/null || true
+
+            sleep 1
+          done
+
+          MEDIAN_STARTUP=$(echo "$STARTUP_VALUES" | sort -n | awk '
+            NF { a[++n]=$1 }
+            END {
+              if (n % 2)
+                print a[(n+1)/2]
+              else
+                printf "%.1f", (a[n/2]+a[n/2+1])/2
+            }
+          ')
+
+          P95_STARTUP=$(echo "$STARTUP_VALUES" | sort -n | awk '
+            NF { a[++n]=$1 }
+            END {
+              i=int(n*0.95+0.999)
+              if (i<1) i=1
+              print a[i]
+            }
+          ')
+
+          MEDIAN_MEMORY=$(echo "$MEMORY_VALUES" | sort -n | awk '
+            NF { a[++n]=$1 }
+            END {
+              if (n % 2)
+                printf "%.2f", a[(n+1)/2]
+              else
+                printf "%.2f", (a[n/2]+a[n/2+1])/2
+            }
+          ')
+
+          echo "startup_median_ms=${MEDIAN_STARTUP}" >> "$GITHUB_OUTPUT"
+          echo "startup_p95_ms=${P95_STARTUP}" >> "$GITHUB_OUTPUT"
+          echo "memory_median_mb=${MEDIAN_MEMORY}" >> "$GITHUB_OUTPUT"
+
+      # ============================================================
+      # HTTP LATENCY
+      # ============================================================
+
+      - name: HTTP latency benchmark
+        if: matrix.runtime == 'jvm' || (matrix.runtime == 'native' && matrix.framework != 'Spring')
+        id: http
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ matrix.runtime }}" == "jvm" ]]; then
+            ARTIFACT="${{ steps.artifact_jvm.outputs.artifact }}"
+
+            (
+              cd "${{ matrix.framework }}"
+              java -jar "$ARTIFACT"
+            ) > /tmp/framework.log 2>&1 &
+
+          else
+
+            case "${{ matrix.framework }}" in
+              Quarkus)
+                ARTIFACT="${{ steps.artifact_quarkus.outputs.artifact }}"
+                ;;
+              Ktor)
+                ARTIFACT="${{ steps.ktor_native.outputs.artifact }}"
+                ;;
+              Http4k)
+                ARTIFACT="${{ steps.http4k_native.outputs.artifact }}"
+                ;;
+            esac
+
+            "$ARTIFACT" > /tmp/framework.log 2>&1 &
+
+          fi
+
+          PID=$!
+
+          READY=0
+
+          for SECOND in $(seq 1 "$STARTUP_TIMEOUT"); do
+            if curl \
+              --silent \
+              --fail \
+              --max-time 1 \
+              "http://127.0.0.1:${PORT}/greet/John" \
+              > /dev/null 2>&1; then
+              READY=1
+              break
+            fi
+
+            sleep 1
+          done
+
+          if [[ "$READY" != "1" ]]; then
+            cat /tmp/framework.log || true
+            kill "$PID" 2>/dev/null || true
+            exit 1
+          fi
+
+          # Warmup
+          for i in {1..20}; do
+            curl \
+              --silent \
+              --output /dev/null \
+              "http://127.0.0.1:${PORT}/greet/John"
+          done
+
+          VALUES=""
+
+          for i in $(seq 1 100); do
+
+            TIME=$(curl \
+              --silent \
+              --output /dev/null \
+              --write-out '%{time_total}' \
+              "http://127.0.0.1:${PORT}/greet/John")
+
+            VALUES="${VALUES}${TIME}"$'\n'
+
+          done
+
+          AVG=$(echo "$VALUES" | awk '
+            NF {
+              sum += $1
+              count++
+            }
+            END {
+              printf "%.4f", sum/count
+            }
+          ')
+
+          MEDIAN=$(echo "$VALUES" | sort -n | awk '
+            NF { a[++n]=$1 }
+            END {
+              if (n % 2)
+                printf "%.4f", a[(n+1)/2]
+              else
+                printf "%.4f", (a[n/2]+a[n/2+1])/2
+            }
+          ')
+
+          P95=$(echo "$VALUES" | sort -n | awk '
+            NF { a[++n]=$1 }
+            END {
+              i=int(n*0.95+0.999)
+              if (i<1) i=1
+              printf "%.4f", a[i]
+            }
+          ')
+
+          echo "avg_seconds=${AVG}" >> "$GITHUB_OUTPUT"
+          echo "median_seconds=${MEDIAN}" >> "$GITHUB_OUTPUT"
+          echo "p95_seconds=${P95}" >> "$GITHUB_OUTPUT"
+
+          kill "$PID" 2>/dev/null || true
+          wait "$PID" 2>/dev/null || true
+
+      # ============================================================
+      # RESULT
+      # ============================================================
+
+      - name: Create result JSON
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p results
+
+          FRAMEWORK="${{ matrix.framework }}"
+          RUNTIME="${{ matrix.runtime }}"
+
+          if [[ "$RUNTIME" == "jvm" ]]; then
+
+            BUILD="${{ steps.build_jvm.outputs.build_ms || 0 }}"
+            ARTIFACT="${{ steps.artifact_jvm.outputs.size_mb || 0 }}"
+            STARTUP="${{ steps.benchmark_jvm.outputs.startup_median_ms || 0 }}"
+            STARTUP_P95="${{ steps.benchmark_jvm.outputs.startup_p95_ms || 0 }}"
+            MEMORY="${{ steps.benchmark_jvm.outputs.memory_median_mb || 0 }}"
+
+          else
+
+            BUILD="${{ steps.build_native.outputs.build_ms || 0 }}"
+            STARTUP="${{ steps.benchmark_native.outputs.startup_median_ms || 0 }}"
+            STARTUP_P95="${{ steps.benchmark_native.outputs.startup_p95_ms || 0 }}"
+            MEMORY="${{ steps.benchmark_native.outputs.memory_median_mb || 0 }}"
+
+            case "$FRAMEWORK" in
+              Quarkus)
+                ARTIFACT="${{ steps.artifact_quarkus.outputs.size_mb || 0 }}"
+                ;;
+              Ktor)
+                ARTIFACT="${{ steps.ktor_native.outputs.size_mb || 0 }}"
+                ;;
+              Http4k)
+                ARTIFACT="${{ steps.http4k_native.outputs.size_mb || 0 }}"
+                ;;
+              Spring)
+                ARTIFACT="0"
+                ;;
+            esac
+
+          fi
+
+          HTTP_AVG="${{ steps.http.outputs.avg_seconds || 0 }}"
+          HTTP_MEDIAN="${{ steps.http.outputs.median_seconds || 0 }}"
+          HTTP_P95="${{ steps.http.outputs.p95_seconds || 0 }}"
+
+          cat > "results/${FRAMEWORK}-${RUNTIME}.json" <<EOF
+          {
+            "framework": "$FRAMEWORK",
+            "runtime": "$RUNTIME",
+            "commit": "${GITHUB_SHA}",
+            "run_id": "${GITHUB_RUN_ID}",
+            "run_number": "${GITHUB_RUN_NUMBER}",
+            "runner": "${RUNNER_OS}",
+            "java_version": "${JAVA_VERSION}",
+            "measurements": ${RUNS},
+            "build_time_ms": ${BUILD},
+            "artifact_size_mb": ${ARTIFACT},
+            "startup_median_ms": ${STARTUP},
+            "startup_p95_ms": ${STARTUP_P95},
+            "memory_median_mb": ${MEMORY},
+            "http_average_seconds": ${HTTP_AVG},
+            "http_median_seconds": ${HTTP_MEDIAN},
+            "http_p95_seconds": ${HTTP_P95}
+          }
+          EOF
+
+          cat "results/${FRAMEWORK}-${RUNTIME}.json"
+
+      - name: Upload individual result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: result-${{ matrix.framework }}-${{ matrix.runtime }}
+          path: results/
+          retention-days: 30
+
+  # ==================================================================
+  # REPORT
+  # ==================================================================
+
+  report:
+    name: Generate benchmark report
+    runs-on: ubuntu-latest
+    needs: benchmark
+    if: always()
+
+    steps:
+      - name: Download benchmark results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: result-*
+          path: downloaded
+          merge-multiple: true
+
+      - name: Generate combined report
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p reports
+
+          # Combine all JSON files.
+          jq -s '.' downloaded/*.json > reports/results.json
+
+          cat > reports/results.md <<EOF
+          # Web Framework Benchmark
+
+          **Run:** ${GITHUB_RUN_NUMBER}
+
+          **Commit:** \`${GITHUB_SHA}\`
+
+          **Measurements per runtime:** ${RUNS}
+
+          ## Results
+
+          | Framework | Runtime | Build | Artifact | Startup median | Startup P95 | Memory median | HTTP avg | HTTP P95 |
+          |---|---|---:|---:|---:|---:|---:|---:|---:|
+          EOF
+
+          jq -r '
+            sort_by(.framework, .runtime)[] |
+            "| \(.framework) | \(.runtime) | \(.build_time_ms) ms | \(.artifact_size_mb) MB | \(.startup_median_ms) ms | \(.startup_p95_ms) ms | \(.memory_median_mb) MB | \(.http_average_seconds) s | \(.http_p95_seconds) s |"
+          ' reports/results.json >> reports/results.md
+
+          cat >> reports/results.md <<'EOF'
+
+          ## Methodology
+
+          The benchmark is executed manually using GitHub Actions.
+
+          JVM and Native runtimes are measured independently.
+
+          Startup time is measured from process start until:
+
+          `GET /greet/John`
+
+          successfully returns.
+
+          Each runtime is started multiple times. The reported startup and
+          memory values use the median of those measurements.
+
+          HTTP latency is measured using 100 requests after 20 warm-up requests.
+
+          ## Environment
+
+          - Java: 17
+          - Runner: GitHub-hosted Ubuntu
+          - Measurements: 7
+          - Startup timeout: 120 seconds
+          - HTTP warm-up: 20 requests
+          - HTTP benchmark: 100 requests
+
+          > GitHub-hosted runners are shared infrastructure. Results should
+          > primarily be used for relative comparisons between frameworks.
+          EOF
+
+          echo
+          echo "================ REPORT ================"
+          cat reports/results.md
+          echo "========================================"
+
+      - name: Add report to GitHub Summary
+        shell: bash
+        run: |
+          cat reports/results.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create benchmark artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: |
+            reports/results.md
+            reports/results.json
+          retention-days: 90
+          if-no-files-found: error
