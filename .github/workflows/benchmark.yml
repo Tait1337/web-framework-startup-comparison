@@ -1,15 +1,3 @@
-Below is a complete replacement for `.github/workflows/benchmark.yml`. It includes:
-
-- Framework-specific request headers.
-- Independent header initialization in every shell step.
-- HTTP status diagnostics when readiness fails.
-- Application log output on failure.
-- No invalid Spring native-image benchmark.
-- More reliable Quarkus native artifact discovery.
-- `--fail` on warm-up and latency requests.
-- Valid YAML indentation.
-
-```yaml
 name: Web Framework Benchmark
 
 on:
@@ -831,4 +819,3 @@ jobs:
             reports/results.json
           retention-days: 90
           if-no-files-found: error
-```
