@@ -26,7 +26,6 @@ jobs:
           - Quarkus
           - Ktor
           - Http4k
-
         runtime:
           - jvm
           - native
@@ -61,30 +60,14 @@ jobs:
           cache: gradle
 
       - name: Show environment
+        shell: bash
         run: |
           echo "Framework: ${{ matrix.framework }}"
           echo "Runtime:   ${{ matrix.runtime }}"
-
-          echo
-          echo "Java:"
           java -version
-
-          echo
-          echo "Native Image:"
           native-image --version 2>/dev/null || true
-
-          echo
-          echo "CPU:"
           nproc
-          lscpu | grep -E 'Model name|CPU\(s\)' || true
-
-          echo
-          echo "Memory:"
           free -h
-
-      # ============================================================
-      # JVM BUILD
-      # ============================================================
 
       - name: Build JVM
         if: matrix.runtime == 'jvm'
@@ -95,19 +78,12 @@ jobs:
           set -euo pipefail
 
           START=$(date +%s%N)
-
           ./gradlew clean build --no-daemon
-
           END=$(date +%s%N)
 
           BUILD_MS=$(( (END - START) / 1000000 ))
-
           echo "Build time: ${BUILD_MS} ms"
           echo "build_ms=${BUILD_MS}" >> "$GITHUB_OUTPUT"
-
-      # ============================================================
-      # NATIVE BUILD
-      # ============================================================
 
       - name: Build Native
         if: matrix.runtime == 'native'
@@ -120,34 +96,25 @@ jobs:
           START=$(date +%s%N)
 
           case "${{ matrix.framework }}" in
-
             Spring)
               ./gradlew clean bootBuildImage --no-daemon
               ;;
-
             Quarkus)
               ./gradlew clean build \
                 -Dquarkus.native.enabled=true \
                 -Dquarkus.native.container-build=false \
                 --no-daemon
               ;;
-
             Ktor|Http4k)
               ./gradlew clean shadowJar --no-daemon
               ;;
-
           esac
 
           END=$(date +%s%N)
-
           BUILD_MS=$(( (END - START) / 1000000 ))
 
-          echo "Native build time: ${BUILD_MS} ms"
+          echo "Build time: ${BUILD_MS} ms"
           echo "build_ms=${BUILD_MS}" >> "$GITHUB_OUTPUT"
-
-      # ============================================================
-      # JVM ARTIFACT
-      # ============================================================
 
       - name: Find JVM artifact
         if: matrix.runtime == 'jvm'
@@ -165,11 +132,9 @@ jobs:
                 ! -name "*plain.jar" \
                 | head -n 1)
               ;;
-
             Quarkus)
               ARTIFACT="build/quarkus-app/quarkus-run.jar"
               ;;
-
             Ktor|Http4k)
               ARTIFACT=$(find build/libs \
                 -type f \
@@ -179,7 +144,7 @@ jobs:
               ;;
           esac
 
-          if [[ ! -f "$ARTIFACT" ]]; then
+          if [[ -z "${ARTIFACT:-}" || ! -f "$ARTIFACT" ]]; then
             echo "::error::Could not find JVM artifact"
             find build -type f | sort
             exit 1
@@ -194,10 +159,6 @@ jobs:
           echo "artifact=$ARTIFACT" >> "$GITHUB_OUTPUT"
           echo "size_bytes=$SIZE_BYTES" >> "$GITHUB_OUTPUT"
           echo "size_mb=$SIZE_MB" >> "$GITHUB_OUTPUT"
-
-      # ============================================================
-      # QUARKUS NATIVE ARTIFACT
-      # ============================================================
 
       - name: Find Quarkus native artifact
         if: matrix.runtime == 'native' && matrix.framework == 'Quarkus'
@@ -230,10 +191,6 @@ jobs:
           echo "size_bytes=$SIZE_BYTES" >> "$GITHUB_OUTPUT"
           echo "size_mb=$SIZE_MB" >> "$GITHUB_OUTPUT"
 
-      # ============================================================
-      # KTOR NATIVE
-      # ============================================================
-
       - name: Build Ktor native executable
         if: matrix.runtime == 'native' && matrix.framework == 'Ktor'
         id: ktor_native
@@ -264,14 +221,9 @@ jobs:
           SIZE_MB=$(awk "BEGIN { printf \"%.2f\", ${SIZE_BYTES}/1024/1024 }")
 
           echo "Native binary: ${SIZE_MB} MB"
-
           echo "artifact=$PWD/app" >> "$GITHUB_OUTPUT"
           echo "size_bytes=$SIZE_BYTES" >> "$GITHUB_OUTPUT"
           echo "size_mb=$SIZE_MB" >> "$GITHUB_OUTPUT"
-
-      # ============================================================
-      # HTTP4K NATIVE
-      # ============================================================
 
       - name: Build Http4k native executable
         if: matrix.runtime == 'native' && matrix.framework == 'Http4k'
@@ -303,14 +255,9 @@ jobs:
           SIZE_MB=$(awk "BEGIN { printf \"%.2f\", ${SIZE_BYTES}/1024/1024 }")
 
           echo "Native binary: ${SIZE_MB} MB"
-
           echo "artifact=$PWD/app" >> "$GITHUB_OUTPUT"
           echo "size_bytes=$SIZE_BYTES" >> "$GITHUB_OUTPUT"
           echo "size_mb=$SIZE_MB" >> "$GITHUB_OUTPUT"
-
-      # ============================================================
-      # BENCHMARK JVM
-      # ============================================================
 
       - name: Benchmark JVM
         if: matrix.runtime == 'jvm'
@@ -322,30 +269,38 @@ jobs:
 
           ARTIFACT="${{ steps.artifact_jvm.outputs.artifact }}"
 
+          CURL_HEADERS=()
+
+          case "${{ matrix.framework }}" in
+            Spring)
+              CURL_HEADERS=(-H "Accept: text/html")
+              ;;
+            Quarkus)
+              CURL_HEADERS=(-H "Content-Type: text/html")
+              ;;
+          esac
+
           STARTUP_VALUES=""
           MEMORY_VALUES=""
 
           for RUN in $(seq 1 "$RUNS"); do
-
             echo
             echo "=========================================="
             echo "JVM run $RUN / $RUNS"
             echo "=========================================="
 
             rm -f /tmp/framework.log
-
             START=$(date +%s%N)
 
             java -jar "$ARTIFACT" \
               > /tmp/framework.log 2>&1 &
 
             PID=$!
-
             READY=0
 
             for SECOND in $(seq 1 "$STARTUP_TIMEOUT"); do
-
               if curl \
+                "${CURL_HEADERS[@]}" \
                 --silent \
                 --fail \
                 --max-time 1 \
@@ -353,9 +308,7 @@ jobs:
                 > /dev/null 2>&1; then
 
                 END=$(date +%s%N)
-
                 STARTUP_MS=$(( (END - START) / 1000000 ))
-
                 READY=1
                 break
               fi
@@ -394,11 +347,8 @@ jobs:
 
             kill "$PID" 2>/dev/null || true
             wait "$PID" 2>/dev/null || true
-
             fuser -k "${PORT}/tcp" 2>/dev/null || true
-
             sleep 1
-
           done
 
           MEDIAN_STARTUP=$(echo "$STARTUP_VALUES" | sort -n | awk '
@@ -438,10 +388,6 @@ jobs:
           echo "startup_p95_ms=${P95_STARTUP}" >> "$GITHUB_OUTPUT"
           echo "memory_median_mb=${MEDIAN_MEMORY}" >> "$GITHUB_OUTPUT"
 
-      # ============================================================
-      # BENCHMARK NATIVE
-      # ============================================================
-
       - name: Benchmark Native
         if: matrix.runtime == 'native' && matrix.framework != 'Spring'
         id: benchmark_native
@@ -453,11 +399,9 @@ jobs:
             Quarkus)
               ARTIFACT="${{ steps.artifact_quarkus.outputs.artifact }}"
               ;;
-
             Ktor)
               ARTIFACT="${{ steps.ktor_native.outputs.artifact }}"
               ;;
-
             Http4k)
               ARTIFACT="${{ steps.http4k_native.outputs.artifact }}"
               ;;
@@ -465,30 +409,35 @@ jobs:
 
           chmod +x "$ARTIFACT"
 
+          CURL_HEADERS=()
+
+          case "${{ matrix.framework }}" in
+            Quarkus)
+              CURL_HEADERS=(-H "Content-Type: text/html")
+              ;;
+          esac
+
           STARTUP_VALUES=""
           MEMORY_VALUES=""
 
           for RUN in $(seq 1 "$RUNS"); do
-
             echo
             echo "=========================================="
             echo "Native run $RUN / $RUNS"
             echo "=========================================="
 
             rm -f /tmp/framework.log
-
             START=$(date +%s%N)
 
             "$ARTIFACT" \
               > /tmp/framework.log 2>&1 &
 
             PID=$!
-
             READY=0
 
             for SECOND in $(seq 1 "$STARTUP_TIMEOUT"); do
-
               if curl \
+                "${CURL_HEADERS[@]}" \
                 --silent \
                 --fail \
                 --max-time 1 \
@@ -496,9 +445,7 @@ jobs:
                 > /dev/null 2>&1; then
 
                 END=$(date +%s%N)
-
                 STARTUP_MS=$(( (END - START) / 1000000 ))
-
                 READY=1
                 break
               fi
@@ -537,11 +484,8 @@ jobs:
 
             kill "$PID" 2>/dev/null || true
             wait "$PID" 2>/dev/null || true
-
             fuser -k "${PORT}/tcp" 2>/dev/null || true
-
             sleep 1
-
           done
 
           MEDIAN_STARTUP=$(echo "$STARTUP_VALUES" | sort -n | awk '
@@ -581,10 +525,6 @@ jobs:
           echo "startup_p95_ms=${P95_STARTUP}" >> "$GITHUB_OUTPUT"
           echo "memory_median_mb=${MEDIAN_MEMORY}" >> "$GITHUB_OUTPUT"
 
-      # ============================================================
-      # HTTP LATENCY
-      # ============================================================
-
       - name: HTTP latency benchmark
         if: matrix.runtime == 'jvm' || (matrix.runtime == 'native' && matrix.framework != 'Spring')
         id: http
@@ -592,17 +532,25 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [[ "${{ matrix.runtime }}" == "jvm" ]]; then
+          CURL_HEADERS=()
 
+          case "${{ matrix.framework }}" in
+            Spring)
+              CURL_HEADERS=(-H "Accept: text/html")
+              ;;
+            Quarkus)
+              CURL_HEADERS=(-H "Content-Type: text/html")
+              ;;
+          esac
+
+          if [[ "${{ matrix.runtime }}" == "jvm" ]]; then
             ARTIFACT="${{ steps.artifact_jvm.outputs.artifact }}"
 
             (
               cd "${{ matrix.framework }}"
               java -jar "$ARTIFACT"
             ) > /tmp/framework.log 2>&1 &
-
           else
-
             case "${{ matrix.framework }}" in
               Quarkus)
                 ARTIFACT="${{ steps.artifact_quarkus.outputs.artifact }}"
@@ -616,21 +564,24 @@ jobs:
             esac
 
             "$ARTIFACT" > /tmp/framework.log 2>&1 &
-
           fi
 
           PID=$!
-
           READY=0
 
           for SECOND in $(seq 1 "$STARTUP_TIMEOUT"); do
             if curl \
+              "${CURL_HEADERS[@]}" \
               --silent \
               --fail \
               --max-time 1 \
               "http://127.0.0.1:${PORT}/greet/John" \
               > /dev/null 2>&1; then
               READY=1
+              break
+            fi
+
+            if ! kill -0 "$PID" 2>/dev/null; then
               break
             fi
 
@@ -644,27 +595,27 @@ jobs:
             exit 1
           fi
 
-          # Warm-up
           for i in {1..20}; do
             curl \
+              "${CURL_HEADERS[@]}" \
               --silent \
+              --fail \
               --output /dev/null \
               "http://127.0.0.1:${PORT}/greet/John"
           done
 
           VALUES=""
 
-          # 100 requests
           for i in $(seq 1 100); do
-
             TIME=$(curl \
+              "${CURL_HEADERS[@]}" \
               --silent \
+              --fail \
               --output /dev/null \
               --write-out '%{time_total}' \
               "http://127.0.0.1:${PORT}/greet/John")
 
             VALUES="${VALUES}${TIME}"$'\n'
-
           done
 
           AVG=$(echo "$VALUES" | awk '
@@ -706,10 +657,7 @@ jobs:
 
           kill "$PID" 2>/dev/null || true
           wait "$PID" 2>/dev/null || true
-
-      # ============================================================
-      # RESULT
-      # ============================================================
+          fuser -k "${PORT}/tcp" 2>/dev/null || true
 
       - name: Create result JSON
         if: always()
@@ -723,15 +671,12 @@ jobs:
           RUNTIME="${{ matrix.runtime }}"
 
           if [[ "$RUNTIME" == "jvm" ]]; then
-
             BUILD="${{ steps.build_jvm.outputs.build_ms || 0 }}"
             ARTIFACT="${{ steps.artifact_jvm.outputs.size_mb || 0 }}"
             STARTUP="${{ steps.benchmark_jvm.outputs.startup_median_ms || 0 }}"
             STARTUP_P95="${{ steps.benchmark_jvm.outputs.startup_p95_ms || 0 }}"
             MEMORY="${{ steps.benchmark_jvm.outputs.memory_median_mb || 0 }}"
-
           else
-
             BUILD="${{ steps.build_native.outputs.build_ms || 0 }}"
             STARTUP="${{ steps.benchmark_native.outputs.startup_median_ms || 0 }}"
             STARTUP_P95="${{ steps.benchmark_native.outputs.startup_p95_ms || 0 }}"
@@ -751,7 +696,6 @@ jobs:
                 ARTIFACT="0"
                 ;;
             esac
-
           fi
 
           HTTP_AVG="${{ steps.http.outputs.avg_seconds || 0 }}"
@@ -789,10 +733,6 @@ jobs:
           path: results/
           retention-days: 30
 
-  # ==================================================================
-  # REPORT
-  # ==================================================================
-
   report:
     name: Generate benchmark report
     runs-on: ubuntu-latest
@@ -813,7 +753,6 @@ jobs:
           set -euo pipefail
 
           mkdir -p reports
-
           jq -s '.' downloaded/*.json > reports/results.json
 
           cat > reports/results.md <<EOF
@@ -868,10 +807,7 @@ jobs:
           > primarily be used for relative comparisons between frameworks.
           EOF
 
-          echo
-          echo "================ REPORT ================"
           cat reports/results.md
-          echo "========================================"
 
       - name: Add report to GitHub Summary
         shell: bash
