@@ -146,34 +146,71 @@ jobs:
                 -name "*.jar" \
                 ! -name "*plain.jar" \
                 | head -n 1)
+
+              if [[ -z "${ARTIFACT:-}" || ! -f "$ARTIFACT" ]]; then
+                echo "::error::Could not find Spring JVM artifact"
+                find build -type f | sort
+                exit 1
+              fi
+
+              SIZE_BYTES=$(stat -c%s "$ARTIFACT")
+              SIZE_DESCRIPTION="$ARTIFACT"
               ;;
+
             Quarkus)
-              ARTIFACT="build/quarkus-app/quarkus-run.jar"
+              # Quarkus fast-jar applications require the complete
+              # build/quarkus-app directory, not only quarkus-run.jar.
+              APP_DIR="build/quarkus-app"
+              ARTIFACT="${APP_DIR}/quarkus-run.jar"
+
+              if [[ ! -f "$ARTIFACT" ]]; then
+                echo "::error::Could not find Quarkus JVM launcher: $ARTIFACT"
+                find build -type f | sort
+                exit 1
+              fi
+
+              # Sum the logical size of every file in the Quarkus
+              # distribution, including app/, lib/ and quarkus/.
+              SIZE_BYTES=$(find "$APP_DIR" -type f -printf '%s\n' |
+                awk '{ total += $1 } END { printf "%.0f", total }')
+
+              SIZE_DESCRIPTION="$APP_DIR (complete Quarkus distribution)"
               ;;
+
             Ktor|Http4k)
               ARTIFACT=$(find build/libs \
                 -type f \
                 -name "*.jar" \
                 ! -name "*plain.jar" \
                 | head -n 1)
+
+              if [[ -z "${ARTIFACT:-}" || ! -f "$ARTIFACT" ]]; then
+                echo "::error::Could not find ${{ matrix.framework }} JVM artifact"
+                find build -type f | sort
+                exit 1
+              fi
+
+              SIZE_BYTES=$(stat -c%s "$ARTIFACT")
+              SIZE_DESCRIPTION="$ARTIFACT"
               ;;
+
             *)
-              echo "::error::Unsupported JVM framework"
+              echo "::error::Unsupported JVM framework: ${{ matrix.framework }}"
               exit 1
               ;;
           esac
 
-          if [[ -z "${ARTIFACT:-}" || ! -f "$ARTIFACT" ]]; then
-            echo "::error::Could not find JVM artifact"
-            find build -type f | sort
+          if [[ -z "${SIZE_BYTES:-}" || "$SIZE_BYTES" -le 0 ]]; then
+            echo "::error::Could not determine JVM artifact size"
             exit 1
           fi
 
-          SIZE_BYTES=$(stat -c%s "$ARTIFACT")
-          SIZE_MB=$(awk "BEGIN { printf \"%.2f\", ${SIZE_BYTES}/1024/1024 }")
+          SIZE_MB=$(awk -v bytes="$SIZE_BYTES" \
+            'BEGIN { printf "%.2f", bytes / 1024 / 1024 }')
 
-          echo "Artifact: $ARTIFACT"
-          echo "Size: ${SIZE_MB} MB"
+          echo "Launcher: $ARTIFACT"
+          echo "Measured artifact: $SIZE_DESCRIPTION"
+          echo "Size: ${SIZE_BYTES} bytes (${SIZE_MB} MB)"
 
           echo "artifact=$ARTIFACT" >> "$GITHUB_OUTPUT"
           echo "size_bytes=$SIZE_BYTES" >> "$GITHUB_OUTPUT"
