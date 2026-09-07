@@ -17,6 +17,7 @@ application {
 
 dependencies {
     implementation(kotlin("stdlib-jdk8"))
+    implementation(kotlin("reflect"))
     implementation(platform("org.http4k:http4k-bom:4.25.16.2"))
     implementation("org.http4k:http4k-core")
     implementation("org.http4k", "http4k-server-apache", "4.25.16.2")
