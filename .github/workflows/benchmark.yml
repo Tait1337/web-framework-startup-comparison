@@ -1,3 +1,15 @@
+Below is a complete replacement for `.github/workflows/benchmark.yml`. It includes:
+
+- Framework-specific request headers.
+- Independent header initialization in every shell step.
+- HTTP status diagnostics when readiness fails.
+- Application log output on failure.
+- No invalid Spring native-image benchmark.
+- More reliable Quarkus native artifact discovery.
+- `--fail` on warm-up and latency requests.
+- Valid YAML indentation.
+
+```yaml
 name: Web Framework Benchmark
 
 on:
@@ -29,6 +41,11 @@ jobs:
         runtime:
           - jvm
           - native
+        exclude:
+          # Spring native creates a container image, not a directly executable
+          # artifact. It is therefore not included in this benchmark.
+          - framework: Spring
+            runtime: native
 
     steps:
       - name: Checkout
@@ -37,6 +54,8 @@ jobs:
       - name: Set Gradle wrapper executable
         shell: bash
         run: |
+          set -euo pipefail
+
           chmod +x \
             Spring/gradlew \
             Quarkus/gradlew \
@@ -62,10 +81,15 @@ jobs:
       - name: Show environment
         shell: bash
         run: |
+          set -euo pipefail
+
           echo "Framework: ${{ matrix.framework }}"
           echo "Runtime:   ${{ matrix.runtime }}"
+          echo
           java -version
+          echo
           native-image --version 2>/dev/null || true
+          echo
           nproc
           free -h
 
@@ -78,10 +102,12 @@ jobs:
           set -euo pipefail
 
           START=$(date +%s%N)
-          ./gradlew clean build --no-daemon
-          END=$(date +%s%N)
 
+          ./gradlew clean build --no-daemon
+
+          END=$(date +%s%N)
           BUILD_MS=$(( (END - START) / 1000000 ))
+
           echo "Build time: ${BUILD_MS} ms"
           echo "build_ms=${BUILD_MS}" >> "$GITHUB_OUTPUT"
 
@@ -96,9 +122,6 @@ jobs:
           START=$(date +%s%N)
 
           case "${{ matrix.framework }}" in
-            Spring)
-              ./gradlew clean bootBuildImage --no-daemon
-              ;;
             Quarkus)
               ./gradlew clean build \
                 -Dquarkus.native.enabled=true \
@@ -107,6 +130,10 @@ jobs:
               ;;
             Ktor|Http4k)
               ./gradlew clean shadowJar --no-daemon
+              ;;
+            *)
+              echo "::error::Unsupported native framework: ${{ matrix.framework }}"
+              exit 1
               ;;
           esac
 
@@ -142,6 +169,10 @@ jobs:
                 ! -name "*plain.jar" \
                 | head -n 1)
               ;;
+            *)
+              echo "::error::Unsupported JVM framework"
+              exit 1
+              ;;
           esac
 
           if [[ -z "${ARTIFACT:-}" || ! -f "$ARTIFACT" ]]; then
@@ -169,17 +200,18 @@ jobs:
           set -euo pipefail
 
           ARTIFACT=$(find build \
-            -maxdepth 3 \
             -type f \
-            -executable \
+            \( -name "*-runner" -o -name "app" \) \
             ! -name "*.jar" \
             | head -n 1)
 
-          if [[ -z "${ARTIFACT:-}" ]]; then
+          if [[ -z "${ARTIFACT:-}" || ! -f "$ARTIFACT" ]]; then
             echo "::error::Could not find Quarkus native executable"
-            find build -type f | sort
+            find build -type f -printf '%M %p\n' | sort
             exit 1
           fi
+
+          chmod +x "$ARTIFACT"
 
           SIZE_BYTES=$(stat -c%s "$ARTIFACT")
           SIZE_MB=$(awk "BEGIN { printf \"%.2f\", ${SIZE_BYTES}/1024/1024 }")
@@ -205,8 +237,9 @@ jobs:
             ! -name "*plain.jar" \
             | head -n 1)
 
-          if [[ -z "${JAR:-}" ]]; then
+          if [[ -z "${JAR:-}" || ! -f "$JAR" ]]; then
             echo "::error::Could not find Ktor fat JAR"
+            find build -type f | sort
             exit 1
           fi
 
@@ -216,6 +249,8 @@ jobs:
             -H:+ReportExceptionStackTraces \
             -jar "$JAR" \
             app
+
+          chmod +x app
 
           SIZE_BYTES=$(stat -c%s app)
           SIZE_MB=$(awk "BEGIN { printf \"%.2f\", ${SIZE_BYTES}/1024/1024 }")
@@ -239,8 +274,9 @@ jobs:
             ! -name "*plain.jar" \
             | head -n 1)
 
-          if [[ -z "${JAR:-}" ]]; then
+          if [[ -z "${JAR:-}" || ! -f "$JAR" ]]; then
             echo "::error::Could not find Http4k fat JAR"
+            find build -type f | sort
             exit 1
           fi
 
@@ -250,6 +286,8 @@ jobs:
             -H:+ReportExceptionStackTraces \
             -jar "$JAR" \
             app
+
+          chmod +x app
 
           SIZE_BYTES=$(stat -c%s app)
           SIZE_MB=$(awk "BEGIN { printf \"%.2f\", ${SIZE_BYTES}/1024/1024 }")
@@ -285,11 +323,10 @@ jobs:
 
           for RUN in $(seq 1 "$RUNS"); do
             echo
-            echo "=========================================="
-            echo "JVM run $RUN / $RUNS"
-            echo "=========================================="
+            echo "JVM run ${RUN} / ${RUNS}"
 
             rm -f /tmp/framework.log
+
             START=$(date +%s%N)
 
             java -jar "$ARTIFACT" \
@@ -297,16 +334,18 @@ jobs:
 
             PID=$!
             READY=0
+            LAST_STATUS="none"
 
             for SECOND in $(seq 1 "$STARTUP_TIMEOUT"); do
-              if curl \
+              LAST_STATUS=$(curl \
                 "${CURL_HEADERS[@]}" \
                 --silent \
-                --fail \
+                --output /dev/null \
+                --write-out '%{http_code}' \
                 --max-time 1 \
-                "http://127.0.0.1:${PORT}/greet/John" \
-                > /dev/null 2>&1; then
+                "http://127.0.0.1:${PORT}/greet/John" || true)
 
+              if [[ "$LAST_STATUS" == "200" ]]; then
                 END=$(date +%s%N)
                 STARTUP_MS=$(( (END - START) / 1000000 ))
                 READY=1
@@ -322,6 +361,7 @@ jobs:
 
             if [[ "$READY" != "1" ]]; then
               echo "::error::JVM application did not become ready"
+              echo "::error::Last HTTP status: ${LAST_STATUS}"
               cat /tmp/framework.log || true
               kill "$PID" 2>/dev/null || true
               exit 1
@@ -332,7 +372,7 @@ jobs:
             RSS_KB=$(ps -o rss= -p "$PID" | tr -d ' ')
 
             if [[ -z "$RSS_KB" ]]; then
-              echo "::error::Could not read RSS"
+              echo "::error::Could not read JVM RSS"
               kill "$PID" 2>/dev/null || true
               exit 1
             fi
@@ -380,16 +420,12 @@ jobs:
             }
           ')
 
-          echo "Median startup: ${MEDIAN_STARTUP} ms"
-          echo "P95 startup:    ${P95_STARTUP} ms"
-          echo "Median memory:  ${MEDIAN_MEMORY} MB"
-
           echo "startup_median_ms=${MEDIAN_STARTUP}" >> "$GITHUB_OUTPUT"
           echo "startup_p95_ms=${P95_STARTUP}" >> "$GITHUB_OUTPUT"
           echo "memory_median_mb=${MEDIAN_MEMORY}" >> "$GITHUB_OUTPUT"
 
       - name: Benchmark Native
-        if: matrix.runtime == 'native' && matrix.framework != 'Spring'
+        if: matrix.runtime == 'native'
         id: benchmark_native
         shell: bash
         run: |
@@ -398,35 +434,33 @@ jobs:
           case "${{ matrix.framework }}" in
             Quarkus)
               ARTIFACT="${{ steps.artifact_quarkus.outputs.artifact }}"
+              CURL_HEADERS=(-H "Content-Type: text/html")
               ;;
             Ktor)
               ARTIFACT="${{ steps.ktor_native.outputs.artifact }}"
+              CURL_HEADERS=()
               ;;
             Http4k)
               ARTIFACT="${{ steps.http4k_native.outputs.artifact }}"
+              CURL_HEADERS=()
+              ;;
+            *)
+              echo "::error::Unsupported native framework"
+              exit 1
               ;;
           esac
 
           chmod +x "$ARTIFACT"
-
-          CURL_HEADERS=()
-
-          case "${{ matrix.framework }}" in
-            Quarkus)
-              CURL_HEADERS=(-H "Content-Type: text/html")
-              ;;
-          esac
 
           STARTUP_VALUES=""
           MEMORY_VALUES=""
 
           for RUN in $(seq 1 "$RUNS"); do
             echo
-            echo "=========================================="
-            echo "Native run $RUN / $RUNS"
-            echo "=========================================="
+            echo "Native run ${RUN} / ${RUNS}"
 
             rm -f /tmp/framework.log
+
             START=$(date +%s%N)
 
             "$ARTIFACT" \
@@ -434,16 +468,18 @@ jobs:
 
             PID=$!
             READY=0
+            LAST_STATUS="none"
 
             for SECOND in $(seq 1 "$STARTUP_TIMEOUT"); do
-              if curl \
+              LAST_STATUS=$(curl \
                 "${CURL_HEADERS[@]}" \
                 --silent \
-                --fail \
+                --output /dev/null \
+                --write-out '%{http_code}' \
                 --max-time 1 \
-                "http://127.0.0.1:${PORT}/greet/John" \
-                > /dev/null 2>&1; then
+                "http://127.0.0.1:${PORT}/greet/John" || true)
 
+              if [[ "$LAST_STATUS" == "200" ]]; then
                 END=$(date +%s%N)
                 STARTUP_MS=$(( (END - START) / 1000000 ))
                 READY=1
@@ -459,6 +495,7 @@ jobs:
 
             if [[ "$READY" != "1" ]]; then
               echo "::error::Native application did not become ready"
+              echo "::error::Last HTTP status: ${LAST_STATUS}"
               cat /tmp/framework.log || true
               kill "$PID" 2>/dev/null || true
               exit 1
@@ -517,16 +554,12 @@ jobs:
             }
           ')
 
-          echo "Median startup: ${MEDIAN_STARTUP} ms"
-          echo "P95 startup:    ${P95_STARTUP} ms"
-          echo "Median memory:  ${MEDIAN_MEMORY} MB"
-
           echo "startup_median_ms=${MEDIAN_STARTUP}" >> "$GITHUB_OUTPUT"
           echo "startup_p95_ms=${P95_STARTUP}" >> "$GITHUB_OUTPUT"
           echo "memory_median_mb=${MEDIAN_MEMORY}" >> "$GITHUB_OUTPUT"
 
       - name: HTTP latency benchmark
-        if: matrix.runtime == 'jvm' || (matrix.runtime == 'native' && matrix.framework != 'Spring')
+        if: matrix.runtime == 'jvm' || matrix.runtime == 'native'
         id: http
         shell: bash
         run: |
@@ -563,20 +596,24 @@ jobs:
                 ;;
             esac
 
+            chmod +x "$ARTIFACT"
             "$ARTIFACT" > /tmp/framework.log 2>&1 &
           fi
 
           PID=$!
           READY=0
+          LAST_STATUS="none"
 
           for SECOND in $(seq 1 "$STARTUP_TIMEOUT"); do
-            if curl \
+            LAST_STATUS=$(curl \
               "${CURL_HEADERS[@]}" \
               --silent \
-              --fail \
+              --output /dev/null \
+              --write-out '%{http_code}' \
               --max-time 1 \
-              "http://127.0.0.1:${PORT}/greet/John" \
-              > /dev/null 2>&1; then
+              "http://127.0.0.1:${PORT}/greet/John" || true)
+
+            if [[ "$LAST_STATUS" == "200" ]]; then
               READY=1
               break
             fi
@@ -590,6 +627,7 @@ jobs:
 
           if [[ "$READY" != "1" ]]; then
             echo "::error::Application did not become ready"
+            echo "::error::Last HTTP status: ${LAST_STATUS}"
             cat /tmp/framework.log || true
             kill "$PID" 2>/dev/null || true
             exit 1
@@ -692,7 +730,7 @@ jobs:
               Http4k)
                 ARTIFACT="${{ steps.http4k_native.outputs.size_mb || 0 }}"
                 ;;
-              Spring)
+              *)
                 ARTIFACT="0"
                 ;;
             esac
@@ -732,6 +770,7 @@ jobs:
           name: result-${{ matrix.framework }}-${{ matrix.runtime }}
           path: results/
           retention-days: 30
+          if-no-files-found: error
 
   report:
     name: Generate benchmark report
@@ -753,6 +792,7 @@ jobs:
           set -euo pipefail
 
           mkdir -p reports
+
           jq -s '.' downloaded/*.json > reports/results.json
 
           cat > reports/results.md <<EOF
@@ -775,38 +815,6 @@ jobs:
             "| \(.framework) | \(.runtime) | \(.build_time_ms) ms | \(.artifact_size_mb) MB | \(.startup_median_ms) ms | \(.startup_p95_ms) ms | \(.memory_median_mb) MB | \(.http_average_seconds) s | \(.http_p95_seconds) s |"
           ' reports/results.json >> reports/results.md
 
-          cat >> reports/results.md <<'EOF'
-
-          ## Methodology
-
-          The benchmark is executed manually using GitHub Actions.
-
-          JVM and Native runtimes are measured independently.
-
-          Startup time is measured from process start until:
-
-          `GET /greet/John`
-
-          successfully returns.
-
-          Each runtime is started multiple times. The reported startup and
-          memory values use the median of those measurements.
-
-          HTTP latency is measured using 100 requests after 20 warm-up requests.
-
-          ## Environment
-
-          - Java: 17
-          - Runner: GitHub-hosted Ubuntu
-          - Measurements: 7
-          - Startup timeout: 120 seconds
-          - HTTP warm-up: 20 requests
-          - HTTP benchmark: 100 requests
-
-          > GitHub-hosted runners are shared infrastructure. Results should
-          > primarily be used for relative comparisons between frameworks.
-          EOF
-
           cat reports/results.md
 
       - name: Add report to GitHub Summary
@@ -823,3 +831,4 @@ jobs:
             reports/results.json
           retention-days: 90
           if-no-files-found: error
+```
