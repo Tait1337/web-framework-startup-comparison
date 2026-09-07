@@ -57,8 +57,11 @@ jobs:
           java-version: ${{ env.JAVA_VERSION }}
           cache: gradle
 
+      # Quarkus 2.9.2 requires an older GraalVM/Mandrel version and is built
+      # inside its compatible builder container instead. Ktor and Http4k use
+      # the GraalVM installed directly on the GitHub Actions runner.
       - name: Setup GraalVM
-        if: matrix.runtime == 'native'
+        if: matrix.runtime == 'native' && matrix.framework != 'Quarkus'
         uses: graalvm/setup-graalvm@v1
         with:
           java-version: ${{ env.GRAALVM_VERSION }}
@@ -77,6 +80,8 @@ jobs:
           java -version
           echo
           native-image --version 2>/dev/null || true
+          echo
+          docker --version 2>/dev/null || true
           echo
           nproc
           free -h
@@ -120,9 +125,12 @@ jobs:
 
           case "${{ matrix.framework }}" in
             Quarkus)
+              # Quarkus 2.9.2 expects GraalVM/Mandrel 22.0.0.2.
+              # Use Quarkus's version-compatible builder container instead
+              # of the newer GraalVM installed on the GitHub runner.
               ./gradlew clean build \
                 -Dquarkus.package.type=native \
-                -Dquarkus.native.container-build=false \
+                -Dquarkus.native.container-build=true \
                 --no-daemon
               ;;
             Ktor|Http4k)
@@ -279,14 +287,23 @@ jobs:
           set -euo pipefail
 
           JAR=$(find build/libs \
+            -maxdepth 1 \
             -type f \
-            -name "*.jar" \
-            ! -name "*plain.jar" \
-            | head -n 1)
+            -name "*-all.jar" \
+            -print \
+            -quit)
 
           if [[ -z "${JAR:-}" || ! -f "$JAR" ]]; then
-            echo "::error::Could not find Ktor fat JAR"
-            find build -type f | sort
+            echo "::error::Could not find Ktor executable fat JAR"
+            echo "::error::Expected a file matching build/libs/*-all.jar"
+            find build/libs -maxdepth 1 -type f -printf '%p\n' | sort
+            exit 1
+          fi
+
+          if ! unzip -p "$JAR" META-INF/MANIFEST.MF |
+            grep -qi '^Main-Class:'; then
+            echo "::error::Ktor fat JAR has no Main-Class manifest entry: $JAR"
+            unzip -p "$JAR" META-INF/MANIFEST.MF || true
             exit 1
           fi
 
@@ -316,14 +333,23 @@ jobs:
           set -euo pipefail
 
           JAR=$(find build/libs \
+            -maxdepth 1 \
             -type f \
-            -name "*.jar" \
-            ! -name "*plain.jar" \
-            | head -n 1)
+            -name "*-all.jar" \
+            -print \
+            -quit)
 
           if [[ -z "${JAR:-}" || ! -f "$JAR" ]]; then
-            echo "::error::Could not find Http4k fat JAR"
-            find build -type f | sort
+            echo "::error::Could not find Http4k executable fat JAR"
+            echo "::error::Expected a file matching build/libs/*-all.jar"
+            find build/libs -maxdepth 1 -type f -printf '%p\n' | sort
+            exit 1
+          fi
+
+          if ! unzip -p "$JAR" META-INF/MANIFEST.MF |
+            grep -qi '^Main-Class:'; then
+            echo "::error::Http4k fat JAR has no Main-Class manifest entry: $JAR"
+            unzip -p "$JAR" META-INF/MANIFEST.MF || true
             exit 1
           fi
 
