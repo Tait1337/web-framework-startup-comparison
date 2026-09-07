@@ -77,14 +77,23 @@ jobs:
           echo "Framework: ${{ matrix.framework }}"
           echo "Runtime:   ${{ matrix.runtime }}"
           echo
+
           java -version
+
           echo
           native-image --version 2>/dev/null || true
+
           echo
           docker --version 2>/dev/null || true
+
           echo
           nproc
+
           free -h
+
+      # -----------------------------------------------------------------------
+      # JVM BUILD
+      # -----------------------------------------------------------------------
 
       - name: Build JVM
         if: matrix.runtime == 'jvm'
@@ -113,6 +122,17 @@ jobs:
           echo "Build time: ${BUILD_MS} ms"
           echo "build_ms=${BUILD_MS}" >> "$GITHUB_OUTPUT"
 
+      # -----------------------------------------------------------------------
+      # NATIVE BUILD
+      #
+      # For Ktor this step now includes BOTH:
+      #
+      #   1. Gradle shadowJar
+      #   2. GraalVM native-image
+      #
+      # Therefore build_time_ms represents the complete Ktor native build.
+      # -----------------------------------------------------------------------
+
       - name: Build Native
         if: matrix.runtime == 'native'
         id: build_native
@@ -133,9 +153,124 @@ jobs:
                 -Dquarkus.native.container-build=true \
                 --no-daemon
               ;;
-            Ktor|Http4k)
+
+            Ktor)
+              echo "========================================"
+              echo "Building Ktor executable fat JAR"
+              echo "========================================"
+
+              ./gradlew clean shadowJar --no-daemon
+
+              JAR=$(find build/libs \
+                -maxdepth 1 \
+                -type f \
+                -name "*-all.jar" \
+                -print \
+                -quit)
+
+              if [[ -z "${JAR:-}" || ! -f "$JAR" ]]; then
+                echo "::error::Could not find Ktor executable fat JAR"
+                echo "::error::Expected a file matching build/libs/*-all.jar"
+                find build/libs \
+                  -maxdepth 1 \
+                  -type f \
+                  -printf '%p\n' |
+                  sort
+                exit 1
+              fi
+
+              echo "Ktor fat JAR: $JAR"
+
+              if ! unzip -p "$JAR" META-INF/MANIFEST.MF |
+                grep -qi '^Main-Class:'; then
+                echo "::error::Ktor fat JAR has no Main-Class manifest entry"
+                echo
+                echo "Manifest:"
+                unzip -p "$JAR" META-INF/MANIFEST.MF || true
+                exit 1
+              fi
+
+              if [[ ! -f "graal-reflection-configuration.json" ]]; then
+                echo "::error::Missing Ktor GraalVM reflection configuration"
+                echo "::error::Expected: Ktor/graal-reflection-configuration.json"
+                exit 1
+              fi
+
+              echo
+              echo "========================================"
+              echo "Building Ktor GraalVM native executable"
+              echo "========================================"
+
+              echo "GraalVM:"
+              native-image --version
+
+              echo
+              echo "Input:"
+              echo "  $JAR"
+
+              echo
+              echo "GraalVM configuration:"
+              echo "  --no-fallback"
+              echo "  --static"
+              echo "  -H:IncludeResources=(.*.properties)|(static/.*)|(META-INF/.*)"
+              echo "  -H:ReflectionConfigurationFiles=graal-reflection-configuration.json"
+              echo "  --allow-incomplete-classpath"
+              echo "  --initialize-at-build-time=io.ktor,kotlinx,kotlin"
+
+              # This intentionally mirrors the native-image invocation from
+              # Ktor/Dockerfile.
+              #
+              # Dockerfile:
+              #
+              # native-image \
+              #   --no-fallback \
+              #   --static \
+              #   -H:IncludeResources="(.*.properties)|(static/.*)|(META-INF/.*)" \
+              #   -H:ReflectionConfigurationFiles=graal-reflection-configuration.json \
+              #   --allow-incomplete-classpath \
+              #   --initialize-at-build-time=io.ktor,kotlinx,kotlin \
+              #   -jar app.jar
+              #
+              native-image \
+                --no-fallback \
+                --static \
+                --enable-url-protocols=http \
+                -H:+ReportExceptionStackTraces \
+                -H:IncludeResources="(.*.properties)|(static/.*)|(META-INF/.*)" \
+                -H:ReflectionConfigurationFiles=graal-reflection-configuration.json \
+                --allow-incomplete-classpath \
+                --initialize-at-build-time=io.ktor,kotlinx,kotlin \
+                -jar "$JAR"
+
+              if [[ ! -x "app" ]]; then
+                echo "::error::Ktor native executable was not created"
+                find . -maxdepth 2 -type f -printf '%p\n' | sort
+                exit 1
+              fi
+
+              chmod +x app
+
+              SIZE_BYTES=$(stat -c%s app)
+              SIZE_MB=$(awk -v bytes="$SIZE_BYTES" \
+                'BEGIN { printf "%.2f", bytes / 1024 / 1024 }')
+
+              echo
+              echo "Ktor native executable:"
+              echo "  app"
+              echo "  ${SIZE_BYTES} bytes"
+              echo "  ${SIZE_MB} MB"
+
+              # Export the native artifact directly from this build step.
+              echo "artifact=$PWD/app" >> "$GITHUB_OUTPUT"
+              echo "size_bytes=$SIZE_BYTES" >> "$GITHUB_OUTPUT"
+              echo "size_mb=$SIZE_MB"
+              echo "size_mb=$SIZE_MB" >> "$GITHUB_OUTPUT"
+              ;;
+
+            Http4k)
               ./gradlew clean shadowJar --no-daemon
               ;;
+
             *)
               echo "::error::Unsupported native framework: ${{ matrix.framework }}"
               exit 1
@@ -145,8 +280,14 @@ jobs:
           END=$(date +%s%N)
           BUILD_MS=$(( (END - START) / 1000000 ))
 
-          echo "Build time: ${BUILD_MS} ms"
+          echo
+          echo "Total native build time: ${BUILD_MS} ms"
+
           echo "build_ms=${BUILD_MS}" >> "$GITHUB_OUTPUT"
+
+      # -----------------------------------------------------------------------
+      # FIND JVM ARTIFACT
+      # -----------------------------------------------------------------------
 
       - name: Find JVM artifact
         if: matrix.runtime == 'jvm'
@@ -207,7 +348,11 @@ jobs:
               if [[ -z "${ARTIFACT:-}" || ! -f "$ARTIFACT" ]]; then
                 echo "::error::Could not find executable ${{ matrix.framework }} fat JAR"
                 echo "::error::Expected a file matching build/libs/*-all.jar"
-                find build/libs -maxdepth 1 -type f -printf '%p\n' | sort
+                find build/libs \
+                  -maxdepth 1 \
+                  -type f \
+                  -printf '%p\n' |
+                  sort
                 exit 1
               fi
 
@@ -246,6 +391,10 @@ jobs:
           echo "size_bytes=$SIZE_BYTES" >> "$GITHUB_OUTPUT"
           echo "size_mb=$SIZE_MB" >> "$GITHUB_OUTPUT"
 
+      # -----------------------------------------------------------------------
+      # FIND QUARKUS NATIVE ARTIFACT
+      # -----------------------------------------------------------------------
+
       - name: Find Quarkus native artifact
         if: matrix.runtime == 'native' && matrix.framework == 'Quarkus'
         id: artifact_quarkus
@@ -278,51 +427,48 @@ jobs:
           echo "size_bytes=$SIZE_BYTES" >> "$GITHUB_OUTPUT"
           echo "size_mb=$SIZE_MB" >> "$GITHUB_OUTPUT"
 
-      - name: Build Ktor native executable
+      # -----------------------------------------------------------------------
+      # FIND KTOR NATIVE ARTIFACT
+      #
+      # The actual GraalVM build was already performed inside Build Native.
+      # This step only validates and exposes the artifact.
+      # -----------------------------------------------------------------------
+
+      - name: Find Ktor native artifact
         if: matrix.runtime == 'native' && matrix.framework == 'Ktor'
-        id: ktor_native
+        id: artifact_ktor
         working-directory: Ktor
         shell: bash
         run: |
           set -euo pipefail
 
-          JAR=$(find build/libs \
-            -maxdepth 1 \
-            -type f \
-            -name "*-all.jar" \
-            -print \
-            -quit)
+          ARTIFACT="app"
 
-          if [[ -z "${JAR:-}" || ! -f "$JAR" ]]; then
-            echo "::error::Could not find Ktor executable fat JAR"
-            echo "::error::Expected a file matching build/libs/*-all.jar"
-            find build/libs -maxdepth 1 -type f -printf '%p\n' | sort
+          if [[ ! -f "$ARTIFACT" ]]; then
+            echo "::error::Could not find Ktor native executable"
+            echo "::error::Expected: Ktor/app"
+            find . -maxdepth 2 -type f -printf '%p\n' | sort
             exit 1
           fi
 
-          if ! unzip -p "$JAR" META-INF/MANIFEST.MF |
-            grep -qi '^Main-Class:'; then
-            echo "::error::Ktor fat JAR has no Main-Class manifest entry: $JAR"
-            unzip -p "$JAR" META-INF/MANIFEST.MF || true
-            exit 1
+          if [[ ! -x "$ARTIFACT" ]]; then
+            chmod +x "$ARTIFACT"
           fi
 
-          native-image \
-            --no-fallback \
-            --enable-url-protocols=http \
-            -H:+ReportExceptionStackTraces \
-            -jar "$JAR" \
-            app
+          SIZE_BYTES=$(stat -c%s "$ARTIFACT")
+          SIZE_MB=$(awk -v bytes="$SIZE_BYTES" \
+            'BEGIN { printf "%.2f", bytes / 1024 / 1024 }')
 
-          chmod +x app
+          echo "Artifact: $PWD/$ARTIFACT"
+          echo "Size: ${SIZE_BYTES} bytes (${SIZE_MB} MB)"
 
-          SIZE_BYTES=$(stat -c%s app)
-          SIZE_MB=$(awk "BEGIN { printf \"%.2f\", ${SIZE_BYTES}/1024/1024 }")
-
-          echo "Native binary: ${SIZE_MB} MB"
-          echo "artifact=$PWD/app" >> "$GITHUB_OUTPUT"
+          echo "artifact=$PWD/$ARTIFACT" >> "$GITHUB_OUTPUT"
           echo "size_bytes=$SIZE_BYTES" >> "$GITHUB_OUTPUT"
           echo "size_mb=$SIZE_MB" >> "$GITHUB_OUTPUT"
+
+      # -----------------------------------------------------------------------
+      # BUILD HTTP4K NATIVE EXECUTABLE
+      # -----------------------------------------------------------------------
 
       - name: Build Http4k native executable
         if: matrix.runtime == 'native' && matrix.framework == 'Http4k'
@@ -342,7 +488,11 @@ jobs:
           if [[ -z "${JAR:-}" || ! -f "$JAR" ]]; then
             echo "::error::Could not find Http4k executable fat JAR"
             echo "::error::Expected a file matching build/libs/*-all.jar"
-            find build/libs -maxdepth 1 -type f -printf '%p\n' | sort
+            find build/libs \
+              -maxdepth 1 \
+              -type f \
+              -printf '%p\n' |
+              sort
             exit 1
           fi
 
@@ -437,7 +587,11 @@ jobs:
           trap - EXIT
 
           echo "Generated native-image configuration files:"
-          find "$CONFIG_DIR" -maxdepth 1 -type f -printf '%p\n' | sort
+          find "$CONFIG_DIR" \
+            -maxdepth 1 \
+            -type f \
+            -printf '%p\n' |
+            sort
 
           if [[ ! -f "$CONFIG_DIR/reflect-config.json" ]]; then
             echo "::error::The native-image agent did not generate reflect-config.json"
@@ -467,9 +621,14 @@ jobs:
             'BEGIN { printf "%.2f", bytes / 1024 / 1024 }')
 
           echo "Native binary: ${SIZE_MB} MB"
+
           echo "artifact=$PWD/app" >> "$GITHUB_OUTPUT"
           echo "size_bytes=$SIZE_BYTES" >> "$GITHUB_OUTPUT"
           echo "size_mb=$SIZE_MB" >> "$GITHUB_OUTPUT"
+
+      # -----------------------------------------------------------------------
+      # BENCHMARK JVM
+      # -----------------------------------------------------------------------
 
       - name: Benchmark JVM
         if: matrix.runtime == 'jvm'
@@ -598,6 +757,10 @@ jobs:
           echo "startup_p95_ms=${P95_STARTUP}" >> "$GITHUB_OUTPUT"
           echo "memory_median_mb=${MEDIAN_MEMORY}" >> "$GITHUB_OUTPUT"
 
+      # -----------------------------------------------------------------------
+      # BENCHMARK NATIVE
+      # -----------------------------------------------------------------------
+
       - name: Benchmark Native
         if: matrix.runtime == 'native'
         id: benchmark_native
@@ -611,7 +774,7 @@ jobs:
               CURL_HEADERS=(-H "Content-Type: text/html")
               ;;
             Ktor)
-              ARTIFACT="${{ steps.ktor_native.outputs.artifact }}"
+              ARTIFACT="${{ steps.artifact_ktor.outputs.artifact }}"
               CURL_HEADERS=()
               ;;
             Http4k)
@@ -732,6 +895,10 @@ jobs:
           echo "startup_p95_ms=${P95_STARTUP}" >> "$GITHUB_OUTPUT"
           echo "memory_median_mb=${MEDIAN_MEMORY}" >> "$GITHUB_OUTPUT"
 
+      # -----------------------------------------------------------------------
+      # HTTP LATENCY BENCHMARK
+      # -----------------------------------------------------------------------
+
       - name: HTTP latency benchmark
         if: matrix.runtime == 'jvm' || matrix.runtime == 'native'
         id: http
@@ -763,7 +930,7 @@ jobs:
                 ARTIFACT="${{ steps.artifact_quarkus.outputs.artifact }}"
                 ;;
               Ktor)
-                ARTIFACT="${{ steps.ktor_native.outputs.artifact }}"
+                ARTIFACT="${{ steps.artifact_ktor.outputs.artifact }}"
                 ;;
               Http4k)
                 ARTIFACT="${{ steps.http4k_native.outputs.artifact }}"
@@ -775,6 +942,7 @@ jobs:
             esac
 
             chmod +x "$ARTIFACT"
+
             "$ARTIFACT" > /tmp/framework.log 2>&1 &
           fi
 
@@ -887,6 +1055,10 @@ jobs:
           wait "$PID" 2>/dev/null || true
           fuser -k "${PORT}/tcp" 2>/dev/null || true
 
+      # -----------------------------------------------------------------------
+      # CREATE RESULT JSON
+      # -----------------------------------------------------------------------
+
       - name: Create result JSON
         if: always()
         shell: bash
@@ -915,7 +1087,7 @@ jobs:
                 ARTIFACT="${{ steps.artifact_quarkus.outputs.size_mb || 0 }}"
                 ;;
               Ktor)
-                ARTIFACT="${{ steps.ktor_native.outputs.size_mb || 0 }}"
+                ARTIFACT="${{ steps.artifact_ktor.outputs.size_mb || 0 }}"
                 ;;
               Http4k)
                 ARTIFACT="${{ steps.http4k_native.outputs.size_mb || 0 }}"
@@ -953,6 +1125,10 @@ jobs:
 
           cat "results/${FRAMEWORK}-${RUNTIME}.json"
 
+      # -----------------------------------------------------------------------
+      # UPLOAD INDIVIDUAL RESULT
+      # -----------------------------------------------------------------------
+
       - name: Upload individual result
         if: always()
         uses: actions/upload-artifact@v4
@@ -961,6 +1137,10 @@ jobs:
           path: results/
           retention-days: 30
           if-no-files-found: error
+
+  # ===========================================================================
+  # REPORT
+  # ===========================================================================
 
   report:
     name: Generate benchmark report
