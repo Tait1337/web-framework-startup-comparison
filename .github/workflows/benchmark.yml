@@ -112,7 +112,7 @@ jobs:
           case "${{ matrix.framework }}" in
             Quarkus)
               ./gradlew clean build \
-                -Dquarkus.native.enabled=true \
+                -Dquarkus.package.type=native \
                 -Dquarkus.native.container-build=false \
                 --no-daemon
               ;;
