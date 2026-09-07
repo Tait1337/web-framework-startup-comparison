@@ -91,6 +91,17 @@ jobs:
 
           free -h
 
+      # Download the Quarkus builder image before starting the timer.
+      # Otherwise, Docker network time would be included in the Quarkus
+      # native build time, while GraalVM setup for Ktor and Http4k is excluded.
+      - name: Prepare Quarkus native builder
+        if: matrix.runtime == 'native' && matrix.framework == 'Quarkus'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          docker pull quay.io/quarkus/ubi-quarkus-native-image:22.0-java17
+
       # -----------------------------------------------------------------------
       # JVM BUILD
       # -----------------------------------------------------------------------
@@ -563,26 +574,38 @@ jobs:
           READY=0
           LAST_STATUS="none"
 
-          for SECOND in $(seq 1 "$STARTUP_TIMEOUT"); do
+          START=$(date +%s%N)
+          DEADLINE=$(( START + STARTUP_TIMEOUT * 1000000000 ))
+          
+          while true; do
             LAST_STATUS=$(curl \
+              "${CURL_HEADERS[@]}" \
               --silent \
               --output /dev/null \
               --write-out '%{http_code}' \
-              --max-time 1 \
+              --connect-timeout 0.05 \
+              --max-time 0.2 \
               "http://127.0.0.1:${PORT}/greet/John" || true)
-
+          
             if [[ "$LAST_STATUS" == "200" ]]; then
+              END=$(date +%s%N)
+              STARTUP_MS=$(awk -v start="$START" -v end="$END" \
+                'BEGIN { printf "%.3f", (end - start) / 1000000 }')
               READY=1
-              echo "Http4k became ready after ${SECOND} second(s)"
               break
             fi
-
-            if ! kill -0 "$AGENT_PID" 2>/dev/null; then
-              echo "::error::Http4k process exited while waiting for readiness"
+          
+            if ! kill -0 "$PID" 2>/dev/null; then
               break
             fi
-
-            sleep 1
+          
+            NOW=$(date +%s%N)
+          
+            if (( NOW >= DEADLINE )); then
+              break
+            fi
+          
+            sleep 0.01
           done
 
           if [[ "$READY" != "1" ]]; then
