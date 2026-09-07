@@ -240,7 +240,8 @@ jobs:
                 -H:ReflectionConfigurationFiles=graal-reflection-configuration.json \
                 --allow-incomplete-classpath \
                 --initialize-at-build-time=io.ktor,kotlinx,kotlin \
-                -jar "$JAR"
+                -jar "$JAR" \
+                app
 
               if [[ ! -x "app" ]]; then
                 echo "::error::Ktor native executable was not created"
@@ -488,18 +489,31 @@ jobs:
           if [[ -z "${JAR:-}" || ! -f "$JAR" ]]; then
             echo "::error::Could not find Http4k executable fat JAR"
             echo "::error::Expected a file matching build/libs/*-all.jar"
-            find build/libs \
-              -maxdepth 1 \
-              -type f \
-              -printf '%p\n' |
-              sort
+
+            if [[ -d build/libs ]]; then
+              find build/libs \
+                -maxdepth 1 \
+                -type f \
+                -printf '%M %s %p\n' |
+                sort || true
+            else
+              echo "::error::Directory does not exist: $PWD/build/libs"
+            fi
+
             exit 1
           fi
 
+          echo "Http4k fat JAR: $PWD/$JAR"
+
           if ! unzip -p "$JAR" META-INF/MANIFEST.MF |
             grep -qi '^Main-Class:'; then
-            echo "::error::Http4k fat JAR has no Main-Class manifest entry: $JAR"
+            echo "::error::Http4k fat JAR has no Main-Class manifest entry"
+            echo "::error::Artifact: $PWD/$JAR"
+
+            echo
+            echo "Manifest:"
             unzip -p "$JAR" META-INF/MANIFEST.MF || true
+
             exit 1
           fi
 
@@ -510,6 +524,7 @@ jobs:
           mkdir -p "$CONFIG_DIR"
           rm -f "$AGENT_LOG"
 
+          echo
           echo "Generating native-image configuration for Http4k and Jackson..."
 
           java \
@@ -527,6 +542,7 @@ jobs:
                 if ! kill -0 "$AGENT_PID" 2>/dev/null; then
                   break
                 fi
+
                 sleep 1
               done
 
@@ -554,10 +570,12 @@ jobs:
 
             if [[ "$LAST_STATUS" == "200" ]]; then
               READY=1
+              echo "Http4k became ready after ${SECOND} second(s)"
               break
             fi
 
             if ! kill -0 "$AGENT_PID" 2>/dev/null; then
+              echo "::error::Http4k process exited while waiting for readiness"
               break
             fi
 
@@ -567,12 +585,16 @@ jobs:
           if [[ "$READY" != "1" ]]; then
             echo "::error::Http4k did not become ready while generating native-image configuration"
             echo "::error::Last HTTP status: ${LAST_STATUS}"
+
+            echo
+            echo "Native-image agent application log:"
             cat "$AGENT_LOG" || true
+
             exit 1
           fi
 
-          # Exercise the endpoint repeatedly so the agent observes Jackson,
-          # jackson-module-kotlin, Kotlin reflection, and the response DTO.
+          # Exercise the endpoint repeatedly so the native-image agent observes
+          # Jackson, jackson-module-kotlin, Kotlin reflection and the response DTO.
           for i in $(seq 1 20); do
             RESPONSE=$(curl \
               --silent \
@@ -583,46 +605,116 @@ jobs:
             echo "Agent request ${i}: ${RESPONSE}"
           done
 
+          # Stop the instrumented JVM gracefully so the native-image agent
+          # writes its configuration files.
           cleanup_agent
           trap - EXIT
 
+          echo
           echo "Generated native-image configuration files:"
+
           find "$CONFIG_DIR" \
             -maxdepth 1 \
             -type f \
-            -printf '%p\n' |
-            sort
+            -printf '%M %s %p\n' |
+            sort || true
 
           if [[ ! -f "$CONFIG_DIR/reflect-config.json" ]]; then
             echo "::error::The native-image agent did not generate reflect-config.json"
+            echo "::error::Expected: $CONFIG_DIR/reflect-config.json"
+
+            echo
+            echo "Native-image agent application log:"
             cat "$AGENT_LOG" || true
+
             exit 1
           fi
 
+          echo
           echo "Building Http4k native executable..."
 
-          native-image \
+          # Keep one canonical path for validation, measurement and outputs.
+          OUTPUT="$PWD/app"
+
+          # Prevent a stale executable from making validation pass when the
+          # current native-image invocation did not produce a new artifact.
+          rm -f "$OUTPUT"
+
+          if ! native-image \
             --no-fallback \
             --enable-url-protocols=http \
             -H:+ReportExceptionStackTraces \
             -H:ConfigurationFileDirectories="$CONFIG_DIR" \
             -jar "$JAR" \
-            app
+            app; then
+            echo "::error::Http4k native-image compilation failed"
 
-          chmod +x app
+            echo
+            echo "Files present after the failed native-image invocation:"
+            find "$PWD" \
+              -maxdepth 2 \
+              -type f \
+              -printf '%M %s %p\n' |
+              sort || true
 
-          if [[ ! -x app ]]; then
-            echo "::error::Http4k native executable was not created"
             exit 1
           fi
 
-          SIZE_BYTES=$(stat -c%s app)
+          # Check existence before chmod. With `set -e`, calling chmod first
+          # would terminate the step immediately if native-image did not create
+          # the expected file, hiding the more useful diagnostic message below.
+          if [[ ! -f "$OUTPUT" ]]; then
+            echo "::error::Http4k native-image completed without creating the expected executable"
+            echo "::error::Expected output: $OUTPUT"
+
+            echo
+            echo "Files present after native-image completed:"
+            find "$PWD" \
+              -maxdepth 2 \
+              -type f \
+              -printf '%M %s %p\n' |
+              sort || true
+
+            exit 1
+          fi
+
+          if [[ ! -s "$OUTPUT" ]]; then
+            echo "::error::Http4k native executable exists but is empty"
+            echo "::error::Artifact: $OUTPUT"
+            ls -l "$OUTPUT" || true
+            exit 1
+          fi
+
+          if ! chmod +x "$OUTPUT"; then
+            echo "::error::Could not make the Http4k native executable executable"
+            echo "::error::Artifact: $OUTPUT"
+            ls -l "$OUTPUT" || true
+            exit 1
+          fi
+
+          if [[ ! -x "$OUTPUT" ]]; then
+            echo "::error::Http4k native artifact is still not executable after chmod"
+            echo "::error::Artifact: $OUTPUT"
+            ls -l "$OUTPUT" || true
+            exit 1
+          fi
+
+          echo
+          echo "Native executable details:"
+          ls -lh "$OUTPUT"
+          file "$OUTPUT" || true
+
+          SIZE_BYTES=$(stat -c%s "$OUTPUT")
           SIZE_MB=$(awk -v bytes="$SIZE_BYTES" \
             'BEGIN { printf "%.2f", bytes / 1024 / 1024 }')
 
-          echo "Native binary: ${SIZE_MB} MB"
+          echo
+          echo "Http4k native executable:"
+          echo "  Path: $OUTPUT"
+          echo "  Size: ${SIZE_BYTES} bytes"
+          echo "  Size: ${SIZE_MB} MB"
 
-          echo "artifact=$PWD/app" >> "$GITHUB_OUTPUT"
+          echo "artifact=$OUTPUT" >> "$GITHUB_OUTPUT"
           echo "size_bytes=$SIZE_BYTES" >> "$GITHUB_OUTPUT"
           echo "size_mb=$SIZE_MB" >> "$GITHUB_OUTPUT"
 
