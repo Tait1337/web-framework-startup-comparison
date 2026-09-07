@@ -149,7 +149,6 @@ jobs:
 
               ./gradlew clean bootBuildImage \
                 --imageName="$SPRING_NATIVE_IMAGE" \
-                --environment=BP_NATIVE_IMAGE=true \
                 --no-daemon
 
               if ! docker image inspect "$SPRING_NATIVE_IMAGE" \
@@ -160,8 +159,19 @@ jobs:
                 exit 1
               fi
 
+              SIZE_BYTES=$(docker image inspect \
+                "$SPRING_NATIVE_IMAGE" \
+                --format '{{.Size}}')
+
+              echo
+              echo "Spring native container image created:"
+              echo "  Image: $SPRING_NATIVE_IMAGE"
+              echo "  Size:  ${SIZE_BYTES} bytes"
+
+              echo
+              echo "Image configuration:"
               docker image inspect "$SPRING_NATIVE_IMAGE" \
-                --format 'Created image {{.RepoTags}} ({{.Size}} bytes)'
+                --format 'Entrypoint={{json .Config.Entrypoint}} Cmd={{json .Config.Cmd}}'
               ;;
 
             Quarkus)
