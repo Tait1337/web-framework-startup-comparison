@@ -353,17 +353,118 @@ jobs:
             exit 1
           fi
 
+          CONFIG_DIR="$PWD/build/native-image-config"
+          AGENT_LOG="$PWD/build/native-image-agent.log"
+
+          rm -rf "$CONFIG_DIR"
+          mkdir -p "$CONFIG_DIR"
+          rm -f "$AGENT_LOG"
+
+          echo "Generating native-image configuration for Http4k and Jackson..."
+
+          java \
+            -agentlib:native-image-agent=config-output-dir="$CONFIG_DIR" \
+            -jar "$JAR" \
+            > "$AGENT_LOG" 2>&1 &
+
+          AGENT_PID=$!
+
+          cleanup_agent() {
+            if kill -0 "$AGENT_PID" 2>/dev/null; then
+              kill -TERM "$AGENT_PID" 2>/dev/null || true
+
+              for i in $(seq 1 15); do
+                if ! kill -0 "$AGENT_PID" 2>/dev/null; then
+                  break
+                fi
+                sleep 1
+              done
+
+              if kill -0 "$AGENT_PID" 2>/dev/null; then
+                kill -KILL "$AGENT_PID" 2>/dev/null || true
+              fi
+            fi
+
+            wait "$AGENT_PID" 2>/dev/null || true
+            fuser -k "${PORT}/tcp" 2>/dev/null || true
+          }
+
+          trap cleanup_agent EXIT
+
+          READY=0
+          LAST_STATUS="none"
+
+          for SECOND in $(seq 1 "$STARTUP_TIMEOUT"); do
+            LAST_STATUS=$(curl \
+              --silent \
+              --output /dev/null \
+              --write-out '%{http_code}' \
+              --max-time 1 \
+              "http://127.0.0.1:${PORT}/greet/John" || true)
+
+            if [[ "$LAST_STATUS" == "200" ]]; then
+              READY=1
+              break
+            fi
+
+            if ! kill -0 "$AGENT_PID" 2>/dev/null; then
+              break
+            fi
+
+            sleep 1
+          done
+
+          if [[ "$READY" != "1" ]]; then
+            echo "::error::Http4k did not become ready while generating native-image configuration"
+            echo "::error::Last HTTP status: ${LAST_STATUS}"
+            cat "$AGENT_LOG" || true
+            exit 1
+          fi
+
+          # Exercise the endpoint repeatedly so the agent observes Jackson,
+          # jackson-module-kotlin, Kotlin reflection, and the response DTO.
+          for i in $(seq 1 20); do
+            RESPONSE=$(curl \
+              --silent \
+              --show-error \
+              --fail \
+              "http://127.0.0.1:${PORT}/greet/John")
+
+            echo "Agent request ${i}: ${RESPONSE}"
+          done
+
+          cleanup_agent
+          trap - EXIT
+
+          echo "Generated native-image configuration files:"
+          find "$CONFIG_DIR" -maxdepth 1 -type f -printf '%p\n' | sort
+
+          if [[ ! -f "$CONFIG_DIR/reflect-config.json" ]]; then
+            echo "::error::The native-image agent did not generate reflect-config.json"
+            cat "$AGENT_LOG" || true
+            exit 1
+          fi
+
+          echo "Building Http4k native executable..."
+
           native-image \
             --no-fallback \
             --enable-url-protocols=http \
             -H:+ReportExceptionStackTraces \
+            -H:ConfigurationFileDirectories="$CONFIG_DIR" \
             -jar "$JAR" \
             app
 
           chmod +x app
 
+          if [[ ! -x app ]]; then
+            echo "::error::Http4k native executable was not created"
+            exit 1
+          fi
+
           SIZE_BYTES=$(stat -c%s app)
-          SIZE_MB=$(awk "BEGIN { printf \"%.2f\", ${SIZE_BYTES}/1024/1024 }")
+          SIZE_MB=$(awk -v bytes="$SIZE_BYTES" \
+            'BEGIN { printf "%.2f", bytes / 1024 / 1024 }')
 
           echo "Native binary: ${SIZE_MB} MB"
           echo "artifact=$PWD/app" >> "$GITHUB_OUTPUT"
