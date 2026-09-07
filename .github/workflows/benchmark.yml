@@ -145,12 +145,15 @@ jobs:
 
           case "${{ matrix.framework }}" in
             Quarkus)
-              # Quarkus 2.9.2 expects GraalVM/Mandrel 22.0.0.2.
-              # Use Quarkus's version-compatible builder container instead
-              # of the newer GraalVM installed on the GitHub runner.
+              # GraalVM 22.0's Java 17 runtime can crash while detecting
+              # cgroup v2 metrics on modern GitHub Actions Docker hosts.
+              #
+              # -J forwards the option to the JVM running native-image.
+              # Disabling UseContainerSupport avoids the broken cgroup probe.
               ./gradlew clean build \
                 -Dquarkus.package.type=native \
                 -Dquarkus.native.container-build=true \
+                -Dquarkus.native.additional-build-args=-J-XX:-UseContainerSupport \
                 --no-daemon
               ;;
 
