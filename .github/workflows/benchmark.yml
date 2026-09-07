@@ -91,7 +91,16 @@ jobs:
 
           START=$(date +%s%N)
 
-          ./gradlew clean build --no-daemon
+          case "${{ matrix.framework }}" in
+            Ktor|Http4k)
+              # Produce an executable fat JAR containing all dependencies
+              # and the Main-Class manifest entry.
+              ./gradlew clean build shadowJar --no-daemon
+              ;;
+            *)
+              ./gradlew clean build --no-daemon
+              ;;
+          esac
 
           END=$(date +%s%N)
           BUILD_MS=$(( (END - START) / 1000000 ))
@@ -178,20 +187,33 @@ jobs:
               ;;
 
             Ktor|Http4k)
+              # Ktor and Http4k require the executable fat JAR generated
+              # by shadowJar. Do not select the normal non-executable JAR.
               ARTIFACT=$(find build/libs \
+                -maxdepth 1 \
                 -type f \
-                -name "*.jar" \
-                ! -name "*plain.jar" \
-                | head -n 1)
+                -name "*-all.jar" \
+                -print \
+                -quit)
 
               if [[ -z "${ARTIFACT:-}" || ! -f "$ARTIFACT" ]]; then
-                echo "::error::Could not find ${{ matrix.framework }} JVM artifact"
-                find build -type f | sort
+                echo "::error::Could not find executable ${{ matrix.framework }} fat JAR"
+                echo "::error::Expected a file matching build/libs/*-all.jar"
+                find build/libs -maxdepth 1 -type f -printf '%p\n' | sort
+                exit 1
+              fi
+
+              # Verify that java -jar can determine the application's
+              # entry point before running the benchmark.
+              if ! unzip -p "$ARTIFACT" META-INF/MANIFEST.MF |
+                grep -qi '^Main-Class:'; then
+                echo "::error::The fat JAR has no Main-Class manifest entry: $ARTIFACT"
+                unzip -p "$ARTIFACT" META-INF/MANIFEST.MF || true
                 exit 1
               fi
 
               SIZE_BYTES=$(stat -c%s "$ARTIFACT")
-              SIZE_DESCRIPTION="$ARTIFACT"
+              SIZE_DESCRIPTION="$ARTIFACT (executable fat JAR)"
               ;;
 
             *)
