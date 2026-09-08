@@ -1,4 +1,5 @@
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
+import org.springframework.boot.gradle.tasks.bundling.BootBuildImage
 
 plugins {
     application
@@ -9,15 +10,24 @@ plugins {
     kotlin("plugin.spring") version "1.6.21"
 }
 
+group = "com.example"
+version = "0.0.1-SNAPSHOT"
+
 application {
     mainClass.set("com.example.AppKt")
-    group = "com.example"
-    version = "0.0.1-SNAPSHOT"
-    java.sourceCompatibility = JavaVersion.VERSION_17
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
 }
 
 repositories {
-    maven { url = uri("https://repo.spring.io/release") }
+    maven {
+        url = uri("https://repo.spring.io/milestone")
+    }
+    maven {
+        url = uri("https://repo.spring.io/release")
+    }
     mavenCentral()
 }
 
@@ -29,9 +39,19 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-reactor")
 }
 
-tasks.withType<KotlinCompile> {
+tasks.withType<KotlinCompile>().configureEach {
     kotlinOptions {
         freeCompilerArgs = listOf("-Xjsr305=strict")
         jvmTarget = "17"
     }
+}
+
+tasks.named<BootBuildImage>("bootBuildImage") {
+    builder.set("paketobuildpacks/builder:tiny")
+
+    environment.set(
+        mapOf(
+            "BP_NATIVE_IMAGE" to "true"
+        )
+    )
 }
