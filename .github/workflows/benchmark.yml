@@ -129,7 +129,28 @@ jobs:
       # -----------------------------------------------------------------------
       # NATIVE BUILD
       # -----------------------------------------------------------------------
+      - name: Verify BellSoft download endpoint
+        if: matrix.runtime == 'native' && matrix.framework == 'Spring'
+        shell: bash
+        run: |
+          set -euo pipefail
 
+          URL="https://download.bell-sw.com/vm/23.0.0/bellsoft-liberica-vm-core-openjdk17.0.7+7-23.0.0+1-linux-amd64.tar.gz"
+
+          curl \
+            --fail \
+            --silent \
+            --show-error \
+            --location \
+            --head \
+            "$URL"
+      - name: Prepare Spring native builder
+        if: matrix.runtime == 'native' && matrix.framework == 'Spring'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          docker pull docker.io/paketobuildpacks/builder-jammy-tiny:latest
       - name: Build Native
         if: matrix.runtime == 'native'
         id: build_native
