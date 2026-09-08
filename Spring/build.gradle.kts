@@ -47,8 +47,11 @@ tasks.withType<KotlinCompile>().configureEach {
 }
 
 tasks.named<BootBuildImage>("bootBuildImage") {
-    builder = "paketobuildpacks/builder:tiny"
+    builder = System.getenv("SPRING_NATIVE_BUILDER")
+        ?: "docker.io/paketobuildpacks/builder-jammy-tiny:latest"
+
     environment = mapOf(
-        "BP_NATIVE_IMAGE" to "true"
+        "BP_NATIVE_IMAGE" to "true",
+        "BP_JVM_VERSION" to "17"
     )
 }
