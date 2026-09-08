@@ -14,10 +14,6 @@ env:
   STARTUP_TIMEOUT: "120"
   SPRING_NATIVE_IMAGE: "benchmark-spring-native:${{ github.run_id }}-${{ github.run_attempt }}"
 
-  # Use a clean Gradle home for every matrix job. Nothing is restored from
-  # previous workflow runs.
-  GRADLE_USER_HOME: "${{ runner.temp }}/gradle-user-home"
-
 jobs:
   benchmark:
     name: ${{ matrix.framework }} / ${{ matrix.runtime }}
@@ -40,23 +36,31 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set selected Gradle wrapper executable
+      - name: Configure isolated Gradle home
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          GRADLE_HOME="${RUNNER_TEMP}/gradle-user-home"
+          rm -rf "$GRADLE_HOME"
+          mkdir -p "$GRADLE_HOME"
+
+          echo "GRADLE_USER_HOME=$GRADLE_HOME" >> "$GITHUB_ENV"
+
+      - name: Set Gradle wrapper executable
         shell: bash
         run: |
           set -euo pipefail
           chmod +x "${{ matrix.framework }}/gradlew"
 
-      # Do not configure the setup-java Gradle cache. GRADLE_USER_HOME points
-      # to a fresh runner temporary directory, and every Gradle invocation also
-      # explicitly disables the Gradle build cache.
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: ${{ env.JAVA_VERSION }}
 
-      # Spring gets GraalVM from the Cloud Native Buildpacks builder.
-      # Quarkus uses its own compatible native-image builder container.
+      # Spring obtains GraalVM from its Cloud Native Buildpacks builder.
+      # Quarkus uses its own native-image builder container.
       - name: Setup GraalVM
         if: >-
           matrix.runtime == 'native' &&
@@ -125,8 +129,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          # --no-build-cache prevents Gradle build-cache reads and writes.
-          # --rerun-tasks prevents task output reuse.
           GRADLE_FLAGS=(
             --no-daemon
             --no-build-cache
@@ -170,8 +172,6 @@ jobs:
 
           case "${{ matrix.framework }}" in
             Spring)
-              # Use the regular executable Spring Boot JAR. The *-aot.jar file
-              # is an intermediate native-build artifact.
               ARTIFACT=$(find build/libs \
                 -maxdepth 1 \
                 -type f \
@@ -184,12 +184,14 @@ jobs:
                 -quit)
 
               if [[ -z "${ARTIFACT:-}" || ! -f "$ARTIFACT" ]]; then
-                echo "::error::Could not find the Spring Boot JVM artifact"
+                echo "::error::Could not find Spring Boot JVM artifact"
+
                 find build/libs \
                   -maxdepth 1 \
                   -type f \
                   -printf '%s %p\n' |
                   sort || true
+
                 exit 1
               fi
 
@@ -243,11 +245,13 @@ jobs:
 
               if [[ -z "${ARTIFACT:-}" || ! -f "$ARTIFACT" ]]; then
                 echo "::error::Could not find executable ${{ matrix.framework }} fat JAR"
+
                 find build/libs \
                   -maxdepth 1 \
                   -type f \
                   -printf '%p\n' |
                   sort || true
+
                 exit 1
               fi
 
@@ -287,9 +291,8 @@ jobs:
       # -----------------------------------------------------------------------
       # NATIVE BUILD
       #
-      # This step includes the complete native build for every framework.
-      # In particular, Http4k agent configuration and native-image compilation
-      # are included in the measured build time.
+      # The entire Http4k native build, including agent configuration and the
+      # native-image invocation, is included in the measured build time.
       # -----------------------------------------------------------------------
 
       - name: Build Native
@@ -307,6 +310,7 @@ jobs:
           )
 
           START=$(date +%s%N)
+          ARTIFACT=""
 
           case "${{ matrix.framework }}" in
             Spring)
@@ -327,44 +331,38 @@ jobs:
                 exit 1
               fi
 
-              # Extract the application filesystem from the Buildpacks image.
-              # The resulting native executable is run directly during the
-              # benchmark, rather than measuring Docker startup.
               ROOTFS="$RUNNER_TEMP/spring-native-rootfs"
               CONTAINER_NAME="spring-native-extract-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 
               rm -rf "$ROOTFS"
               mkdir -p "$ROOTFS"
+
               docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+
+              cleanup_spring_extraction() {
+                docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+              }
+
+              trap cleanup_spring_extraction EXIT
 
               docker create \
                 --name "$CONTAINER_NAME" \
                 "$SPRING_NATIVE_IMAGE" \
                 >/dev/null
 
-              cleanup_spring_image() {
-                docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
-                docker image rm -f "$SPRING_NATIVE_IMAGE" >/dev/null 2>&1 || true
-              }
-
-              trap cleanup_spring_image EXIT
-
               docker export "$CONTAINER_NAME" |
                 tar -xf - -C "$ROOTFS"
 
               echo
-              echo "Executable candidates in /workspace:"
+              echo "Executable candidates in the Spring image workspace:"
 
               find "$ROOTFS/workspace" \
+                -maxdepth 3 \
                 -type f \
                 -perm /111 \
                 -printf '%s %p\n' |
                 sort -nr || true
 
-              # Native Buildpacks place the application under /workspace.
-              # Select the largest executable ELF file that is not a shared
-              # library. The application executable is normally the largest
-              # executable in that directory.
               SPRING_EXECUTABLE=""
 
               while IFS= read -r CANDIDATE; do
@@ -382,13 +380,14 @@ jobs:
                   continue
                 fi
 
-                if grep -qE 'ELF .*(executable|shared object)' \
+                if grep -qE 'ELF .*(executable|pie executable)' \
                   <<< "$DESCRIPTION"; then
                   SPRING_EXECUTABLE="$CANDIDATE"
                   break
                 fi
               done < <(
                 find "$ROOTFS/workspace" \
+                  -maxdepth 3 \
                   -type f \
                   -perm /111 \
                   -printf '%s\t%p\n' |
@@ -399,14 +398,17 @@ jobs:
               if [[ -z "$SPRING_EXECUTABLE" ||
                     ! -s "$SPRING_EXECUTABLE" ]]; then
                 echo "::error::Could not locate the Spring native executable"
+
                 find "$ROOTFS/workspace" \
                   -maxdepth 4 \
                   -type f \
                   -exec file {} \; || true
+
                 exit 1
               fi
 
               ARTIFACT="$PWD/app"
+
               rm -f "$ARTIFACT"
               cp "$SPRING_EXECUTABLE" "$ARTIFACT"
               chmod +x "$ARTIFACT"
@@ -418,7 +420,7 @@ jobs:
               file "$ARTIFACT" || true
               ldd "$ARTIFACT" || true
 
-              cleanup_spring_image
+              cleanup_spring_extraction
               trap - EXIT
               ;;
 
@@ -466,11 +468,13 @@ jobs:
 
               if [[ -z "${JAR:-}" || ! -f "$JAR" ]]; then
                 echo "::error::Could not find Ktor executable fat JAR"
+
                 find build/libs \
                   -maxdepth 1 \
                   -type f \
                   -printf '%p\n' |
                   sort || true
+
                 exit 1
               fi
 
@@ -577,6 +581,7 @@ jobs:
                     if ! kill -0 "$AGENT_PID" 2>/dev/null; then
                       break
                     fi
+
                     sleep 1
                   done
 
@@ -630,7 +635,6 @@ jobs:
                 exit 1
               fi
 
-              # Exercise serialization, reflection and the response DTO.
               for i in $(seq 1 20); do
                 RESPONSE=$(curl \
                   --silent \
@@ -677,11 +681,13 @@ jobs:
 
               if [[ ! -s "$ARTIFACT" ]]; then
                 echo "::error::Http4k native executable was not created"
+
                 find "$PWD" \
                   -maxdepth 2 \
                   -type f \
                   -printf '%M %s %p\n' |
                   sort || true
+
                 exit 1
               fi
 
@@ -694,9 +700,9 @@ jobs:
               ;;
           esac
 
-          if [[ ! -s "$ARTIFACT" ]]; then
+          if [[ -z "$ARTIFACT" || ! -s "$ARTIFACT" ]]; then
             echo "::error::Native artifact does not exist or is empty"
-            echo "::error::Expected artifact: $ARTIFACT"
+            echo "::error::Expected artifact: ${ARTIFACT:-not set}"
             exit 1
           fi
 
@@ -747,6 +753,7 @@ jobs:
             Spring)
               CURL_HEADERS=(-H "Accept: text/html")
               ;;
+
             Quarkus)
               CURL_HEADERS=(-H "Content-Type: text/html")
               ;;
@@ -768,6 +775,7 @@ jobs:
                 if ! kill -0 "$PID" 2>/dev/null; then
                   break
                 fi
+
                 sleep 0.05
               done
 
@@ -901,7 +909,8 @@ jobs:
       # -----------------------------------------------------------------------
       # NATIVE STARTUP AND MEMORY BENCHMARK
       #
-      # All frameworks, including Spring, run as direct host executables.
+      # Spring is run as an extracted host executable rather than through
+      # Docker, making startup and RSS measurements more comparable.
       # -----------------------------------------------------------------------
 
       - name: Benchmark Native
@@ -919,6 +928,7 @@ jobs:
             Spring)
               CURL_HEADERS=(-H "Accept: text/html")
               ;;
+
             Quarkus)
               CURL_HEADERS=(-H "Content-Type: text/html")
               ;;
@@ -947,6 +957,7 @@ jobs:
                 if ! kill -0 "$PID" 2>/dev/null; then
                   break
                 fi
+
                 sleep 0.05
               done
 
@@ -1091,6 +1102,7 @@ jobs:
             Spring)
               CURL_HEADERS=(-H "Accept: text/html")
               ;;
+
             Quarkus)
               CURL_HEADERS=(-H "Content-Type: text/html")
               ;;
@@ -1125,6 +1137,7 @@ jobs:
                 if ! kill -0 "$PID" 2>/dev/null; then
                   break
                 fi
+
                 sleep 0.05
               done
 
@@ -1179,7 +1192,6 @@ jobs:
             exit 1
           fi
 
-          # Warm-up requests.
           for _ in $(seq 1 20); do
             curl \
               "${CURL_HEADERS[@]}" \
@@ -1258,6 +1270,20 @@ jobs:
       - name: Create result JSON
         if: always()
         shell: bash
+        env:
+          JVM_BUILD: ${{ steps.build_jvm.outputs.build_ms }}
+          JVM_ARTIFACT: ${{ steps.artifact_jvm.outputs.size_mb }}
+          JVM_STARTUP: ${{ steps.benchmark_jvm.outputs.startup_median_ms }}
+          JVM_STARTUP_P95: ${{ steps.benchmark_jvm.outputs.startup_p95_ms }}
+          JVM_MEMORY: ${{ steps.benchmark_jvm.outputs.memory_median_mb }}
+          NATIVE_BUILD: ${{ steps.build_native.outputs.build_ms }}
+          NATIVE_ARTIFACT: ${{ steps.build_native.outputs.size_mb }}
+          NATIVE_STARTUP: ${{ steps.benchmark_native.outputs.startup_median_ms }}
+          NATIVE_STARTUP_P95: ${{ steps.benchmark_native.outputs.startup_p95_ms }}
+          NATIVE_MEMORY: ${{ steps.benchmark_native.outputs.memory_median_mb }}
+          HTTP_AVG: ${{ steps.http.outputs.avg_ms }}
+          HTTP_MEDIAN: ${{ steps.http.outputs.median_ms }}
+          HTTP_P95: ${{ steps.http.outputs.p95_ms }}
         run: |
           set -euo pipefail
 
@@ -1267,22 +1293,18 @@ jobs:
           RUNTIME="${{ matrix.runtime }}"
 
           if [[ "$RUNTIME" == "jvm" ]]; then
-            BUILD='${{ steps.build_jvm.outputs.build_ms || 'null' }}'
-            ARTIFACT='${{ steps.artifact_jvm.outputs.size_mb || 'null' }}'
-            STARTUP='${{ steps.benchmark_jvm.outputs.startup_median_ms || 'null' }}'
-            STARTUP_P95='${{ steps.benchmark_jvm.outputs.startup_p95_ms || 'null' }}'
-            MEMORY='${{ steps.benchmark_jvm.outputs.memory_median_mb || 'null' }}'
+            BUILD="$JVM_BUILD"
+            ARTIFACT="$JVM_ARTIFACT"
+            STARTUP="$JVM_STARTUP"
+            STARTUP_P95="$JVM_STARTUP_P95"
+            MEMORY="$JVM_MEMORY"
           else
-            BUILD='${{ steps.build_native.outputs.build_ms || 'null' }}'
-            ARTIFACT='${{ steps.build_native.outputs.size_mb || 'null' }}'
-            STARTUP='${{ steps.benchmark_native.outputs.startup_median_ms || 'null' }}'
-            STARTUP_P95='${{ steps.benchmark_native.outputs.startup_p95_ms || 'null' }}'
-            MEMORY='${{ steps.benchmark_native.outputs.memory_median_mb || 'null' }}'
+            BUILD="$NATIVE_BUILD"
+            ARTIFACT="$NATIVE_ARTIFACT"
+            STARTUP="$NATIVE_STARTUP"
+            STARTUP_P95="$NATIVE_STARTUP_P95"
+            MEMORY="$NATIVE_MEMORY"
           fi
-
-          HTTP_AVG='${{ steps.http.outputs.avg_ms || 'null' }}'
-          HTTP_MEDIAN='${{ steps.http.outputs.median_ms || 'null' }}'
-          HTTP_P95='${{ steps.http.outputs.p95_ms || 'null' }}'
 
           STATUS="success"
 
@@ -1295,11 +1317,30 @@ jobs:
             "$HTTP_AVG" \
             "$HTTP_MEDIAN" \
             "$HTTP_P95"; do
-            if [[ "$VALUE" == "null" || -z "$VALUE" ]]; then
+            if [[ -z "$VALUE" ]]; then
               STATUS="failed"
               break
             fi
           done
+
+          number_or_null() {
+            local VALUE="${1:-}"
+
+            if [[ -z "$VALUE" ]]; then
+              printf 'null'
+            else
+              printf '%s' "$VALUE"
+            fi
+          }
+
+          BUILD_JSON=$(number_or_null "$BUILD")
+          ARTIFACT_JSON=$(number_or_null "$ARTIFACT")
+          STARTUP_JSON=$(number_or_null "$STARTUP")
+          STARTUP_P95_JSON=$(number_or_null "$STARTUP_P95")
+          MEMORY_JSON=$(number_or_null "$MEMORY")
+          HTTP_AVG_JSON=$(number_or_null "$HTTP_AVG")
+          HTTP_MEDIAN_JSON=$(number_or_null "$HTTP_MEDIAN")
+          HTTP_P95_JSON=$(number_or_null "$HTTP_P95")
 
           jq -n \
             --arg framework "$FRAMEWORK" \
@@ -1314,14 +1355,14 @@ jobs:
             --arg image_version "${ImageVersion:-unknown}" \
             --arg java_version "$JAVA_VERSION" \
             --argjson measurements "$RUNS" \
-            --argjson build_time_ms "$BUILD" \
-            --argjson artifact_size_mb "$ARTIFACT" \
-            --argjson startup_median_ms "$STARTUP" \
-            --argjson startup_p95_ms "$STARTUP_P95" \
-            --argjson memory_median_mb "$MEMORY" \
-            --argjson http_average_ms "$HTTP_AVG" \
-            --argjson http_median_ms "$HTTP_MEDIAN" \
-            --argjson http_p95_ms "$HTTP_P95" \
+            --argjson build_time_ms "$BUILD_JSON" \
+            --argjson artifact_size_mb "$ARTIFACT_JSON" \
+            --argjson startup_median_ms "$STARTUP_JSON" \
+            --argjson startup_p95_ms "$STARTUP_P95_JSON" \
+            --argjson memory_median_mb "$MEMORY_JSON" \
+            --argjson http_average_ms "$HTTP_AVG_JSON" \
+            --argjson http_median_ms "$HTTP_MEDIAN_JSON" \
+            --argjson http_p95_ms "$HTTP_P95_JSON" \
             '{
               framework: $framework,
               runtime: $runtime,
@@ -1371,7 +1412,8 @@ jobs:
             --filter "ancestor=$SPRING_NATIVE_IMAGE" |
             xargs -r docker rm -f
 
-          docker image rm -f "$SPRING_NATIVE_IMAGE" 2>/dev/null || true
+          docker image rm -f "$SPRING_NATIVE_IMAGE" \
+            >/dev/null 2>&1 || true
 
   # ===========================================================================
   # REPORT
@@ -1414,11 +1456,11 @@ jobs:
           **Measurements per runtime:** ${RUNS}
 
           > All native artifact sizes represent native executable sizes.
-          > Spring's native executable is extracted from its Buildpacks image
-          > and run directly, without Docker startup overhead.
+          > Spring's executable is extracted from its Buildpacks image and run
+          > directly without Docker startup overhead.
 
-          > A failed or unavailable measurement is shown as **FAILED** and is
-          > represented as \`null\` in the JSON results.
+          > Missing or failed measurements are represented as \`null\` in JSON
+          > and displayed as **FAILED** below.
 
           ## Results
 
