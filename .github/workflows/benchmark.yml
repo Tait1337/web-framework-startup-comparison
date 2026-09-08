@@ -14,10 +14,15 @@ env:
   STARTUP_TIMEOUT: "120"
   SPRING_NATIVE_IMAGE: "benchmark-spring-native:${{ github.run_id }}-${{ github.run_attempt }}"
 
+  # Use a clean Gradle home for every matrix job. Nothing is restored from
+  # previous workflow runs.
+  GRADLE_USER_HOME: "${{ runner.temp }}/gradle-user-home"
+
 jobs:
   benchmark:
     name: ${{ matrix.framework }} / ${{ matrix.runtime }}
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     strategy:
       fail-fast: false
@@ -35,26 +40,23 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set Gradle wrapper executable
+      - name: Set selected Gradle wrapper executable
         shell: bash
         run: |
           set -euo pipefail
+          chmod +x "${{ matrix.framework }}/gradlew"
 
-          chmod +x \
-            Spring/gradlew \
-            Quarkus/gradlew \
-            Ktor/gradlew \
-            Http4k/gradlew
-
+      # Do not configure the setup-java Gradle cache. GRADLE_USER_HOME points
+      # to a fresh runner temporary directory, and every Gradle invocation also
+      # explicitly disables the Gradle build cache.
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: ${{ env.JAVA_VERSION }}
-          cache: gradle
 
-      # Spring uses GraalVM from the Cloud Native Buildpacks builder.
-      # Quarkus uses its own compatible builder container.
+      # Spring gets GraalVM from the Cloud Native Buildpacks builder.
+      # Quarkus uses its own compatible native-image builder container.
       - name: Setup GraalVM
         if: >-
           matrix.runtime == 'native' &&
@@ -65,37 +67,51 @@ jobs:
           java-version: ${{ env.GRAALVM_VERSION }}
           distribution: graalvm-community
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          cache: gradle
 
       - name: Show environment
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "Framework: ${{ matrix.framework }}"
-          echo "Runtime:   ${{ matrix.runtime }}"
-          echo
+          echo "Framework:         ${{ matrix.framework }}"
+          echo "Runtime:           ${{ matrix.runtime }}"
+          echo "Runner OS:         ${RUNNER_OS}"
+          echo "Runner arch:       ${RUNNER_ARCH}"
+          echo "Runner image OS:   ${ImageOS:-unknown}"
+          echo "Runner image ver.: ${ImageVersion:-unknown}"
+          echo "Gradle user home:  ${GRADLE_USER_HOME}"
 
+          echo
+          echo "Java:"
           java -version
 
           echo
+          echo "Native Image:"
           native-image --version 2>/dev/null || true
 
           echo
+          echo "Docker:"
           docker --version 2>/dev/null || true
 
           echo
+          echo "Operating system:"
+          cat /etc/os-release || true
+
+          echo
+          echo "CPU:"
+          lscpu || true
+
+          echo
+          echo "CPU count:"
           nproc
 
+          echo
+          echo "Memory:"
           free -h
 
-      - name: Prepare Quarkus native builder
-        if: matrix.runtime == 'native' && matrix.framework == 'Quarkus'
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          docker pull quay.io/quarkus/ubi-quarkus-native-image:22.0-java17
+          echo
+          echo "Disk:"
+          df -h /
 
       # -----------------------------------------------------------------------
       # JVM BUILD
@@ -109,177 +125,27 @@ jobs:
         run: |
           set -euo pipefail
 
+          # --no-build-cache prevents Gradle build-cache reads and writes.
+          # --rerun-tasks prevents task output reuse.
+          GRADLE_FLAGS=(
+            --no-daemon
+            --no-build-cache
+            --rerun-tasks
+          )
+
           START=$(date +%s%N)
 
           case "${{ matrix.framework }}" in
             Ktor|Http4k)
-              ./gradlew clean build shadowJar --no-daemon
-              ;;
-            *)
-              ./gradlew clean build --no-daemon
-              ;;
-          esac
-
-          END=$(date +%s%N)
-          BUILD_MS=$(( (END - START) / 1000000 ))
-
-          echo "Build time: ${BUILD_MS} ms"
-          echo "build_ms=${BUILD_MS}" >> "$GITHUB_OUTPUT"
-
-      # -----------------------------------------------------------------------
-      # NATIVE BUILD
-      # -----------------------------------------------------------------------
-      - name: Verify BellSoft download endpoint
-        if: matrix.runtime == 'native' && matrix.framework == 'Spring'
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          URL="https://download.bell-sw.com/vm/23.0.0/bellsoft-liberica-vm-core-openjdk17.0.7+7-23.0.0+1-linux-amd64.tar.gz"
-
-          curl \
-            --fail \
-            --silent \
-            --show-error \
-            --location \
-            --head \
-            "$URL"
-      - name: Prepare Spring native builder
-        if: matrix.runtime == 'native' && matrix.framework == 'Spring'
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          docker pull docker.io/paketobuildpacks/builder-jammy-tiny:latest
-      - name: Build Native
-        if: matrix.runtime == 'native'
-        id: build_native
-        working-directory: ${{ matrix.framework }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          START=$(date +%s%N)
-
-          case "${{ matrix.framework }}" in
-            Spring)
-              echo "========================================"
-              echo "Building Spring native container image"
-              echo "Image: $SPRING_NATIVE_IMAGE"
-              echo "========================================"
-
-              ./gradlew clean bootBuildImage \
-                --imageName="$SPRING_NATIVE_IMAGE" \
-                --no-daemon
-
-              if ! docker image inspect "$SPRING_NATIVE_IMAGE" \
-                >/dev/null 2>&1; then
-                echo "::error::Spring native container image was not created"
-                echo "::error::Expected image: $SPRING_NATIVE_IMAGE"
-                docker image ls
-                exit 1
-              fi
-
-              SIZE_BYTES=$(docker image inspect \
-                "$SPRING_NATIVE_IMAGE" \
-                --format '{{.Size}}')
-
-              echo
-              echo "Spring native container image created:"
-              echo "  Image: $SPRING_NATIVE_IMAGE"
-              echo "  Size:  ${SIZE_BYTES} bytes"
-
-              echo
-              echo "Image configuration:"
-              docker image inspect "$SPRING_NATIVE_IMAGE" \
-                --format 'Entrypoint={{json .Config.Entrypoint}} Cmd={{json .Config.Cmd}}'
+              ./gradlew clean build shadowJar "${GRADLE_FLAGS[@]}"
               ;;
 
-            Quarkus)
-              ./gradlew clean build \
-                -Dquarkus.package.type=native \
-                -Dquarkus.native.container-build=true \
-                -Dquarkus.native.additional-build-args=-J-XX:-UseContainerSupport \
-                --no-daemon
-              ;;
-
-            Ktor)
-              echo "========================================"
-              echo "Building Ktor executable fat JAR"
-              echo "========================================"
-
-              ./gradlew clean shadowJar --no-daemon
-
-              JAR=$(find build/libs \
-                -maxdepth 1 \
-                -type f \
-                -name "*-all.jar" \
-                -print \
-                -quit)
-
-              if [[ -z "${JAR:-}" || ! -f "$JAR" ]]; then
-                echo "::error::Could not find Ktor executable fat JAR"
-                echo "::error::Expected a file matching build/libs/*-all.jar"
-                find build/libs \
-                  -maxdepth 1 \
-                  -type f \
-                  -printf '%p\n' |
-                  sort || true
-                exit 1
-              fi
-
-              echo "Ktor fat JAR: $JAR"
-
-              if ! unzip -p "$JAR" META-INF/MANIFEST.MF |
-                grep -qi '^Main-Class:'; then
-                echo "::error::Ktor fat JAR has no Main-Class manifest entry"
-                unzip -p "$JAR" META-INF/MANIFEST.MF || true
-                exit 1
-              fi
-
-              if [[ ! -f "graal-reflection-configuration.json" ]]; then
-                echo "::error::Missing Ktor GraalVM reflection configuration"
-                echo "::error::Expected: Ktor/graal-reflection-configuration.json"
-                exit 1
-              fi
-
-              echo
-              echo "========================================"
-              echo "Building Ktor GraalVM native executable"
-              echo "========================================"
-
-              native-image --version
-              rm -f app
-
-              native-image \
-                --no-fallback \
-                --static \
-                --enable-url-protocols=http \
-                -H:+ReportExceptionStackTraces \
-                -H:IncludeResources="(.*.properties)|(static/.*)|(META-INF/.*)" \
-                -H:ReflectionConfigurationFiles=graal-reflection-configuration.json \
-                --allow-incomplete-classpath \
-                --initialize-at-build-time=io.ktor,kotlinx,kotlin \
-                -jar "$JAR" \
-                app
-
-              if [[ ! -s "app" ]]; then
-                echo "::error::Ktor native executable was not created"
-                find . -maxdepth 2 -type f -printf '%p\n' | sort
-                exit 1
-              fi
-
-              chmod +x app
-              ;;
-
-            Http4k)
-              # The native executable itself is built by the later Http4k step,
-              # after generating its native-image configuration with the agent.
-              ./gradlew clean shadowJar --no-daemon
+            Spring|Quarkus)
+              ./gradlew clean build "${GRADLE_FLAGS[@]}"
               ;;
 
             *)
-              echo "::error::Unsupported native framework: ${{ matrix.framework }}"
+              echo "::error::Unsupported JVM framework: ${{ matrix.framework }}"
               exit 1
               ;;
           esac
@@ -287,8 +153,7 @@ jobs:
           END=$(date +%s%N)
           BUILD_MS=$(( (END - START) / 1000000 ))
 
-          echo
-          echo "Native build time: ${BUILD_MS} ms"
+          echo "Build time: ${BUILD_MS} ms"
           echo "build_ms=${BUILD_MS}" >> "$GITHUB_OUTPUT"
 
       # -----------------------------------------------------------------------
@@ -305,9 +170,8 @@ jobs:
 
           case "${{ matrix.framework }}" in
             Spring)
-              # Benchmark the regular Spring Boot JVM application.
-              # The *-aot.jar is an intermediate native-build artifact and
-              # cannot be started using java -jar.
+              # Use the regular executable Spring Boot JAR. The *-aot.jar file
+              # is an intermediate native-build artifact.
               ARTIFACT=$(find build/libs \
                 -maxdepth 1 \
                 -type f \
@@ -320,11 +184,10 @@ jobs:
                 -quit)
 
               if [[ -z "${ARTIFACT:-}" || ! -f "$ARTIFACT" ]]; then
-                echo "::error::Could not find normal Spring Boot JVM artifact"
+                echo "::error::Could not find the Spring Boot JVM artifact"
                 find build/libs \
                   -maxdepth 1 \
                   -type f \
-                  -name "*.jar" \
                   -printf '%s %p\n' |
                   sort || true
                 exit 1
@@ -337,7 +200,6 @@ jobs:
                 <<< "$MANIFEST"; then
                 echo "::error::Spring JVM artifact is not an executable Boot JAR"
                 echo "::error::Artifact: $ARTIFACT"
-                echo
                 echo "$MANIFEST"
                 exit 1
               fi
@@ -345,13 +207,12 @@ jobs:
               if ! grep -q '^Start-Class:' <<< "$MANIFEST"; then
                 echo "::error::Spring JVM artifact has no Start-Class"
                 echo "::error::Artifact: $ARTIFACT"
-                echo
                 echo "$MANIFEST"
                 exit 1
               fi
 
               SIZE_BYTES=$(stat -c%s "$ARTIFACT")
-              SIZE_DESCRIPTION="$ARTIFACT (regular executable Spring Boot JAR)"
+              SIZE_DESCRIPTION="$ARTIFACT (executable Spring Boot JAR)"
               ;;
 
             Quarkus)
@@ -360,11 +221,13 @@ jobs:
 
               if [[ ! -f "$ARTIFACT" ]]; then
                 echo "::error::Could not find Quarkus JVM launcher: $ARTIFACT"
-                find build -type f | sort
+                find build -type f | sort || true
                 exit 1
               fi
 
-              SIZE_BYTES=$(find "$APP_DIR" -type f -printf '%s\n' |
+              SIZE_BYTES=$(find "$APP_DIR" \
+                -type f \
+                -printf '%s\n' |
                 awk '{ total += $1 } END { printf "%.0f", total }')
 
               SIZE_DESCRIPTION="$APP_DIR (complete Quarkus distribution)"
@@ -380,7 +243,6 @@ jobs:
 
               if [[ -z "${ARTIFACT:-}" || ! -f "$ARTIFACT" ]]; then
                 echo "::error::Could not find executable ${{ matrix.framework }} fat JAR"
-                echo "::error::Expected a file matching build/libs/*-all.jar"
                 find build/libs \
                   -maxdepth 1 \
                   -type f \
@@ -414,379 +276,471 @@ jobs:
           SIZE_MB=$(awk -v bytes="$SIZE_BYTES" \
             'BEGIN { printf "%.2f", bytes / 1024 / 1024 }')
 
-          echo "Launcher: $ARTIFACT"
+          echo "Launcher:          $ARTIFACT"
           echo "Measured artifact: $SIZE_DESCRIPTION"
-          echo "Size: ${SIZE_BYTES} bytes (${SIZE_MB} MB)"
+          echo "Size:              ${SIZE_BYTES} bytes (${SIZE_MB} MB)"
 
           echo "artifact=$ARTIFACT" >> "$GITHUB_OUTPUT"
           echo "size_bytes=$SIZE_BYTES" >> "$GITHUB_OUTPUT"
           echo "size_mb=$SIZE_MB" >> "$GITHUB_OUTPUT"
 
       # -----------------------------------------------------------------------
-      # FIND SPRING NATIVE IMAGE
+      # NATIVE BUILD
+      #
+      # This step includes the complete native build for every framework.
+      # In particular, Http4k agent configuration and native-image compilation
+      # are included in the measured build time.
       # -----------------------------------------------------------------------
 
-      - name: Find Spring native image
-        if: matrix.runtime == 'native' && matrix.framework == 'Spring'
-        id: artifact_spring
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          IMAGE="$SPRING_NATIVE_IMAGE"
-
-          if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
-            echo "::error::Could not find Spring native image: $IMAGE"
-            docker image ls
-            exit 1
-          fi
-
-          SIZE_BYTES=$(docker image inspect "$IMAGE" --format '{{.Size}}')
-
-          if [[ -z "${SIZE_BYTES:-}" || "$SIZE_BYTES" -le 0 ]]; then
-            echo "::error::Could not determine Spring native image size"
-            exit 1
-          fi
-
-          SIZE_MB=$(awk -v bytes="$SIZE_BYTES" \
-            'BEGIN { printf "%.2f", bytes / 1024 / 1024 }')
-
-          echo "Image: $IMAGE"
-          echo "Size: ${SIZE_BYTES} bytes (${SIZE_MB} MB)"
-
-          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
-          echo "size_bytes=$SIZE_BYTES" >> "$GITHUB_OUTPUT"
-          echo "size_mb=$SIZE_MB" >> "$GITHUB_OUTPUT"
-
-      # -----------------------------------------------------------------------
-      # FIND QUARKUS NATIVE ARTIFACT
-      # -----------------------------------------------------------------------
-
-      - name: Find Quarkus native artifact
-        if: matrix.runtime == 'native' && matrix.framework == 'Quarkus'
-        id: artifact_quarkus
-        working-directory: Quarkus
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          ARTIFACT=$(find build \
-            -type f \
-            \( -name "*-runner" -o -name "app" \) \
-            ! -name "*.jar" \
-            -print \
-            -quit)
-
-          if [[ -z "${ARTIFACT:-}" || ! -f "$ARTIFACT" ]]; then
-            echo "::error::Could not find Quarkus native executable"
-            find build -type f -printf '%M %p\n' | sort
-            exit 1
-          fi
-
-          chmod +x "$ARTIFACT"
-
-          SIZE_BYTES=$(stat -c%s "$ARTIFACT")
-          SIZE_MB=$(awk -v bytes="$SIZE_BYTES" \
-            'BEGIN { printf "%.2f", bytes / 1024 / 1024 }')
-
-          echo "Artifact: $PWD/$ARTIFACT"
-          echo "Size: ${SIZE_BYTES} bytes (${SIZE_MB} MB)"
-
-          echo "artifact=$PWD/$ARTIFACT" >> "$GITHUB_OUTPUT"
-          echo "size_bytes=$SIZE_BYTES" >> "$GITHUB_OUTPUT"
-          echo "size_mb=$SIZE_MB" >> "$GITHUB_OUTPUT"
-
-      # -----------------------------------------------------------------------
-      # FIND KTOR NATIVE ARTIFACT
-      # -----------------------------------------------------------------------
-
-      - name: Find Ktor native artifact
-        if: matrix.runtime == 'native' && matrix.framework == 'Ktor'
-        id: artifact_ktor
-        working-directory: Ktor
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          ARTIFACT="app"
-
-          if [[ ! -s "$ARTIFACT" ]]; then
-            echo "::error::Could not find Ktor native executable"
-            echo "::error::Expected: Ktor/app"
-            find . -maxdepth 2 -type f -printf '%p\n' | sort
-            exit 1
-          fi
-
-          chmod +x "$ARTIFACT"
-
-          SIZE_BYTES=$(stat -c%s "$ARTIFACT")
-          SIZE_MB=$(awk -v bytes="$SIZE_BYTES" \
-            'BEGIN { printf "%.2f", bytes / 1024 / 1024 }')
-
-          echo "Artifact: $PWD/$ARTIFACT"
-          echo "Size: ${SIZE_BYTES} bytes (${SIZE_MB} MB)"
-
-          echo "artifact=$PWD/$ARTIFACT" >> "$GITHUB_OUTPUT"
-          echo "size_bytes=$SIZE_BYTES" >> "$GITHUB_OUTPUT"
-          echo "size_mb=$SIZE_MB" >> "$GITHUB_OUTPUT"
-
-      # -----------------------------------------------------------------------
-      # BUILD HTTP4K NATIVE EXECUTABLE
-      # -----------------------------------------------------------------------
-
-      - name: Build Http4k native executable
-        if: matrix.runtime == 'native' && matrix.framework == 'Http4k'
-        id: http4k_native
-        working-directory: Http4k
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          JAR=$(find build/libs \
-            -maxdepth 1 \
-            -type f \
-            -name "*-all.jar" \
-            -print \
-            -quit)
-
-          if [[ -z "${JAR:-}" || ! -f "$JAR" ]]; then
-            echo "::error::Could not find Http4k executable fat JAR"
-            echo "::error::Expected a file matching build/libs/*-all.jar"
-
-            if [[ -d build/libs ]]; then
-              find build/libs \
-                -maxdepth 1 \
-                -type f \
-                -printf '%M %s %p\n' |
-                sort || true
-            else
-              echo "::error::Directory does not exist: $PWD/build/libs"
-            fi
-
-            exit 1
-          fi
-
-          echo "Http4k fat JAR: $PWD/$JAR"
-
-          if ! unzip -p "$JAR" META-INF/MANIFEST.MF |
-            grep -qi '^Main-Class:'; then
-            echo "::error::Http4k fat JAR has no Main-Class manifest entry"
-            echo "::error::Artifact: $PWD/$JAR"
-
-            echo
-            echo "Manifest:"
-            unzip -p "$JAR" META-INF/MANIFEST.MF || true
-
-            exit 1
-          fi
-
-          CONFIG_DIR="$PWD/build/native-image-config"
-          AGENT_LOG="$PWD/build/native-image-agent.log"
-
-          rm -rf "$CONFIG_DIR"
-          mkdir -p "$CONFIG_DIR"
-          rm -f "$AGENT_LOG"
-
-          echo
-          echo "Generating native-image configuration for Http4k and Jackson..."
-
-          java \
-            -agentlib:native-image-agent=config-output-dir="$CONFIG_DIR" \
-            -jar "$JAR" \
-            > "$AGENT_LOG" 2>&1 &
-
-          AGENT_PID=$!
-
-          cleanup_agent() {
-            if kill -0 "$AGENT_PID" 2>/dev/null; then
-              kill -TERM "$AGENT_PID" 2>/dev/null || true
-
-              for i in $(seq 1 15); do
-                if ! kill -0 "$AGENT_PID" 2>/dev/null; then
-                  break
-                fi
-
-                sleep 1
-              done
-
-              if kill -0 "$AGENT_PID" 2>/dev/null; then
-                kill -KILL "$AGENT_PID" 2>/dev/null || true
-              fi
-            fi
-
-            wait "$AGENT_PID" 2>/dev/null || true
-            fuser -k "${PORT}/tcp" 2>/dev/null || true
-          }
-
-          trap cleanup_agent EXIT
-
-          READY=0
-          LAST_STATUS="none"
-
-          START=$(date +%s%N)
-          DEADLINE=$(( START + STARTUP_TIMEOUT * 1000000000 ))
-
-          while true; do
-            LAST_STATUS=$(curl \
-              --silent \
-              --output /dev/null \
-              --write-out '%{http_code}' \
-              --connect-timeout 0.05 \
-              --max-time 0.2 \
-              "http://127.0.0.1:${PORT}/greet/John" || true)
-
-            if [[ "$LAST_STATUS" == "200" ]]; then
-              READY=1
-              break
-            fi
-
-            # Important: this process was stored in AGENT_PID.
-            if ! kill -0 "$AGENT_PID" 2>/dev/null; then
-              break
-            fi
-
-            NOW=$(date +%s%N)
-
-            if (( NOW >= DEADLINE )); then
-              break
-            fi
-
-            sleep 0.01
-          done
-
-          if [[ "$READY" != "1" ]]; then
-            echo "::error::Http4k did not become ready while generating native-image configuration"
-            echo "::error::Last HTTP status: ${LAST_STATUS}"
-
-            echo
-            echo "Native-image agent application log:"
-            cat "$AGENT_LOG" || true
-
-            exit 1
-          fi
-
-          # Exercise the endpoint so the native-image agent observes Jackson,
-          # Kotlin reflection and the response DTO.
-          for i in $(seq 1 20); do
-            RESPONSE=$(curl \
-              --silent \
-              --show-error \
-              --fail \
-              "http://127.0.0.1:${PORT}/greet/John")
-
-            echo "Agent request ${i}: ${RESPONSE}"
-          done
-
-          # Stop the instrumented JVM gracefully. This allows the agent to
-          # finish writing its configuration files.
-          cleanup_agent
-          trap - EXIT
-
-          echo
-          echo "Generated native-image configuration files:"
-
-          find "$CONFIG_DIR" \
-            -maxdepth 1 \
-            -type f \
-            -printf '%M %s %p\n' |
-            sort || true
-
-          if [[ ! -f "$CONFIG_DIR/reflect-config.json" ]]; then
-            echo "::error::The native-image agent did not generate reflect-config.json"
-            echo "::error::Expected: $CONFIG_DIR/reflect-config.json"
-
-            echo
-            echo "Native-image agent application log:"
-            cat "$AGENT_LOG" || true
-
-            exit 1
-          fi
-
-          echo
-          echo "Building Http4k native executable..."
-
-          OUTPUT="$PWD/app"
-          rm -f "$OUTPUT"
-
-          if ! native-image \
-            --no-fallback \
-            --enable-url-protocols=http \
-            -H:+ReportExceptionStackTraces \
-            -H:ConfigurationFileDirectories="$CONFIG_DIR" \
-            -jar "$JAR" \
-            app; then
-            echo "::error::Http4k native-image compilation failed"
-
-            echo
-            echo "Files present after the failed native-image invocation:"
-            find "$PWD" \
-              -maxdepth 2 \
-              -type f \
-              -printf '%M %s %p\n' |
-              sort || true
-
-            exit 1
-          fi
-
-          if [[ ! -f "$OUTPUT" ]]; then
-            echo "::error::Http4k native-image completed without creating the expected executable"
-            echo "::error::Expected output: $OUTPUT"
-
-            find "$PWD" \
-              -maxdepth 2 \
-              -type f \
-              -printf '%M %s %p\n' |
-              sort || true
-
-            exit 1
-          fi
-
-          if [[ ! -s "$OUTPUT" ]]; then
-            echo "::error::Http4k native executable exists but is empty"
-            ls -l "$OUTPUT" || true
-            exit 1
-          fi
-
-          chmod +x "$OUTPUT"
-
-          if [[ ! -x "$OUTPUT" ]]; then
-            echo "::error::Http4k native artifact is not executable"
-            ls -l "$OUTPUT" || true
-            exit 1
-          fi
-
-          echo
-          echo "Native executable details:"
-          ls -lh "$OUTPUT"
-          file "$OUTPUT" || true
-
-          SIZE_BYTES=$(stat -c%s "$OUTPUT")
-          SIZE_MB=$(awk -v bytes="$SIZE_BYTES" \
-            'BEGIN { printf "%.2f", bytes / 1024 / 1024 }')
-
-          echo
-          echo "Http4k native executable:"
-          echo "  Path: $OUTPUT"
-          echo "  Size: ${SIZE_BYTES} bytes"
-          echo "  Size: ${SIZE_MB} MB"
-
-          echo "artifact=$OUTPUT" >> "$GITHUB_OUTPUT"
-          echo "size_bytes=$SIZE_BYTES" >> "$GITHUB_OUTPUT"
-          echo "size_mb=$SIZE_MB" >> "$GITHUB_OUTPUT"
-
-      # -----------------------------------------------------------------------
-      # BENCHMARK JVM
-      # -----------------------------------------------------------------------
-
-      - name: Benchmark JVM
-        if: matrix.runtime == 'jvm'
-        id: benchmark_jvm
+      - name: Build Native
+        if: matrix.runtime == 'native'
+        id: build_native
         working-directory: ${{ matrix.framework }}
         shell: bash
         run: |
           set -euo pipefail
 
-          ARTIFACT="${{ steps.artifact_jvm.outputs.artifact }}"
+          GRADLE_FLAGS=(
+            --no-daemon
+            --no-build-cache
+            --rerun-tasks
+          )
+
+          START=$(date +%s%N)
+
+          case "${{ matrix.framework }}" in
+            Spring)
+              echo "========================================"
+              echo "Building Spring native container image"
+              echo "Image: $SPRING_NATIVE_IMAGE"
+              echo "========================================"
+
+              ./gradlew clean bootBuildImage \
+                --imageName="$SPRING_NATIVE_IMAGE" \
+                "${GRADLE_FLAGS[@]}"
+
+              if ! docker image inspect "$SPRING_NATIVE_IMAGE" \
+                >/dev/null 2>&1; then
+                echo "::error::Spring native container image was not created"
+                echo "::error::Expected image: $SPRING_NATIVE_IMAGE"
+                docker image ls
+                exit 1
+              fi
+
+              # Extract the application filesystem from the Buildpacks image.
+              # The resulting native executable is run directly during the
+              # benchmark, rather than measuring Docker startup.
+              ROOTFS="$RUNNER_TEMP/spring-native-rootfs"
+              CONTAINER_NAME="spring-native-extract-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
+              rm -rf "$ROOTFS"
+              mkdir -p "$ROOTFS"
+              docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+
+              docker create \
+                --name "$CONTAINER_NAME" \
+                "$SPRING_NATIVE_IMAGE" \
+                >/dev/null
+
+              cleanup_spring_image() {
+                docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+                docker image rm -f "$SPRING_NATIVE_IMAGE" >/dev/null 2>&1 || true
+              }
+
+              trap cleanup_spring_image EXIT
+
+              docker export "$CONTAINER_NAME" |
+                tar -xf - -C "$ROOTFS"
+
+              echo
+              echo "Executable candidates in /workspace:"
+
+              find "$ROOTFS/workspace" \
+                -type f \
+                -perm /111 \
+                -printf '%s %p\n' |
+                sort -nr || true
+
+              # Native Buildpacks place the application under /workspace.
+              # Select the largest executable ELF file that is not a shared
+              # library. The application executable is normally the largest
+              # executable in that directory.
+              SPRING_EXECUTABLE=""
+
+              while IFS= read -r CANDIDATE; do
+                if [[ -z "$CANDIDATE" ]]; then
+                  continue
+                fi
+
+                DESCRIPTION=$(file -b "$CANDIDATE" || true)
+                BASENAME=$(basename "$CANDIDATE")
+
+                echo "Candidate: $CANDIDATE"
+                echo "Type:      $DESCRIPTION"
+
+                if [[ "$BASENAME" == *.so || "$BASENAME" == *.so.* ]]; then
+                  continue
+                fi
+
+                if grep -qE 'ELF .*(executable|shared object)' \
+                  <<< "$DESCRIPTION"; then
+                  SPRING_EXECUTABLE="$CANDIDATE"
+                  break
+                fi
+              done < <(
+                find "$ROOTFS/workspace" \
+                  -type f \
+                  -perm /111 \
+                  -printf '%s\t%p\n' |
+                  sort -nr |
+                  cut -f2-
+              )
+
+              if [[ -z "$SPRING_EXECUTABLE" ||
+                    ! -s "$SPRING_EXECUTABLE" ]]; then
+                echo "::error::Could not locate the Spring native executable"
+                find "$ROOTFS/workspace" \
+                  -maxdepth 4 \
+                  -type f \
+                  -exec file {} \; || true
+                exit 1
+              fi
+
+              ARTIFACT="$PWD/app"
+              rm -f "$ARTIFACT"
+              cp "$SPRING_EXECUTABLE" "$ARTIFACT"
+              chmod +x "$ARTIFACT"
+
+              echo
+              echo "Extracted Spring native executable:"
+              echo "Source:   $SPRING_EXECUTABLE"
+              echo "Artifact: $ARTIFACT"
+              file "$ARTIFACT" || true
+              ldd "$ARTIFACT" || true
+
+              cleanup_spring_image
+              trap - EXIT
+              ;;
+
+            Quarkus)
+              echo "========================================"
+              echo "Building Quarkus native executable"
+              echo "========================================"
+
+              ./gradlew clean build \
+                -Dquarkus.package.type=native \
+                -Dquarkus.native.container-build=true \
+                -Dquarkus.native.additional-build-args=-J-XX:-UseContainerSupport \
+                "${GRADLE_FLAGS[@]}"
+
+              ARTIFACT=$(find build \
+                -type f \
+                \( -name "*-runner" -o -name "app" \) \
+                ! -name "*.jar" \
+                -print \
+                -quit)
+
+              if [[ -z "${ARTIFACT:-}" || ! -f "$ARTIFACT" ]]; then
+                echo "::error::Could not find Quarkus native executable"
+                find build -type f -printf '%M %p\n' | sort || true
+                exit 1
+              fi
+
+              ARTIFACT=$(realpath "$ARTIFACT")
+              chmod +x "$ARTIFACT"
+              ;;
+
+            Ktor)
+              echo "========================================"
+              echo "Building Ktor executable fat JAR"
+              echo "========================================"
+
+              ./gradlew clean shadowJar "${GRADLE_FLAGS[@]}"
+
+              JAR=$(find build/libs \
+                -maxdepth 1 \
+                -type f \
+                -name "*-all.jar" \
+                -print \
+                -quit)
+
+              if [[ -z "${JAR:-}" || ! -f "$JAR" ]]; then
+                echo "::error::Could not find Ktor executable fat JAR"
+                find build/libs \
+                  -maxdepth 1 \
+                  -type f \
+                  -printf '%p\n' |
+                  sort || true
+                exit 1
+              fi
+
+              if ! unzip -p "$JAR" META-INF/MANIFEST.MF |
+                grep -qi '^Main-Class:'; then
+                echo "::error::Ktor fat JAR has no Main-Class"
+                unzip -p "$JAR" META-INF/MANIFEST.MF || true
+                exit 1
+              fi
+
+              if [[ ! -f "graal-reflection-configuration.json" ]]; then
+                echo "::error::Missing Ktor GraalVM reflection configuration"
+                exit 1
+              fi
+
+              echo
+              echo "========================================"
+              echo "Building Ktor native executable"
+              echo "========================================"
+
+              native-image --version
+              rm -f app
+
+              native-image \
+                --no-fallback \
+                --static \
+                --enable-url-protocols=http \
+                -H:+ReportExceptionStackTraces \
+                -H:IncludeResources="(.*.properties)|(static/.*)|(META-INF/.*)" \
+                -H:ReflectionConfigurationFiles=graal-reflection-configuration.json \
+                --allow-incomplete-classpath \
+                --initialize-at-build-time=io.ktor,kotlinx,kotlin \
+                -jar "$JAR" \
+                app
+
+              ARTIFACT="$PWD/app"
+
+              if [[ ! -s "$ARTIFACT" ]]; then
+                echo "::error::Ktor native executable was not created"
+                find . -maxdepth 2 -type f -printf '%p\n' | sort || true
+                exit 1
+              fi
+
+              chmod +x "$ARTIFACT"
+              ;;
+
+            Http4k)
+              echo "========================================"
+              echo "Building Http4k executable fat JAR"
+              echo "========================================"
+
+              ./gradlew clean shadowJar "${GRADLE_FLAGS[@]}"
+
+              JAR=$(find build/libs \
+                -maxdepth 1 \
+                -type f \
+                -name "*-all.jar" \
+                -print \
+                -quit)
+
+              if [[ -z "${JAR:-}" || ! -f "$JAR" ]]; then
+                echo "::error::Could not find Http4k executable fat JAR"
+
+                if [[ -d build/libs ]]; then
+                  find build/libs \
+                    -maxdepth 1 \
+                    -type f \
+                    -printf '%M %s %p\n' |
+                    sort || true
+                fi
+
+                exit 1
+              fi
+
+              if ! unzip -p "$JAR" META-INF/MANIFEST.MF |
+                grep -qi '^Main-Class:'; then
+                echo "::error::Http4k fat JAR has no Main-Class"
+                unzip -p "$JAR" META-INF/MANIFEST.MF || true
+                exit 1
+              fi
+
+              CONFIG_DIR="$PWD/build/native-image-config"
+              AGENT_LOG="$PWD/build/native-image-agent.log"
+
+              rm -rf "$CONFIG_DIR"
+              mkdir -p "$CONFIG_DIR"
+              rm -f "$AGENT_LOG"
+
+              echo
+              echo "Generating Http4k native-image configuration..."
+
+              java \
+                -agentlib:native-image-agent=config-output-dir="$CONFIG_DIR" \
+                -jar "$JAR" \
+                > "$AGENT_LOG" 2>&1 &
+
+              AGENT_PID=$!
+
+              cleanup_agent() {
+                if kill -0 "$AGENT_PID" 2>/dev/null; then
+                  kill -TERM "$AGENT_PID" 2>/dev/null || true
+
+                  for _ in $(seq 1 15); do
+                    if ! kill -0 "$AGENT_PID" 2>/dev/null; then
+                      break
+                    fi
+                    sleep 1
+                  done
+
+                  if kill -0 "$AGENT_PID" 2>/dev/null; then
+                    kill -KILL "$AGENT_PID" 2>/dev/null || true
+                  fi
+                fi
+
+                wait "$AGENT_PID" 2>/dev/null || true
+                fuser -k "${PORT}/tcp" 2>/dev/null || true
+              }
+
+              trap cleanup_agent EXIT
+
+              READY=0
+              LAST_STATUS="none"
+              READY_START=$(date +%s%N)
+              DEADLINE=$(( READY_START + STARTUP_TIMEOUT * 1000000000 ))
+
+              while true; do
+                LAST_STATUS=$(curl \
+                  --silent \
+                  --output /dev/null \
+                  --write-out '%{http_code}' \
+                  --connect-timeout 0.05 \
+                  --max-time 0.2 \
+                  "http://127.0.0.1:${PORT}/greet/John" || true)
+
+                if [[ "$LAST_STATUS" == "200" ]]; then
+                  READY=1
+                  break
+                fi
+
+                if ! kill -0 "$AGENT_PID" 2>/dev/null; then
+                  break
+                fi
+
+                NOW=$(date +%s%N)
+
+                if (( NOW >= DEADLINE )); then
+                  break
+                fi
+
+                sleep 0.005
+              done
+
+              if [[ "$READY" != "1" ]]; then
+                echo "::error::Http4k did not become ready while generating native-image configuration"
+                echo "::error::Last HTTP status: ${LAST_STATUS}"
+                cat "$AGENT_LOG" || true
+                exit 1
+              fi
+
+              # Exercise serialization, reflection and the response DTO.
+              for i in $(seq 1 20); do
+                RESPONSE=$(curl \
+                  --silent \
+                  --show-error \
+                  --fail \
+                  "http://127.0.0.1:${PORT}/greet/John")
+
+                echo "Agent request ${i}: ${RESPONSE}"
+              done
+
+              cleanup_agent
+              trap - EXIT
+
+              echo
+              echo "Generated native-image configuration:"
+
+              find "$CONFIG_DIR" \
+                -maxdepth 1 \
+                -type f \
+                -printf '%M %s %p\n' |
+                sort || true
+
+              if [[ ! -f "$CONFIG_DIR/reflect-config.json" ]]; then
+                echo "::error::The native-image agent did not generate reflect-config.json"
+                cat "$AGENT_LOG" || true
+                exit 1
+              fi
+
+              echo
+              echo "========================================"
+              echo "Building Http4k native executable"
+              echo "========================================"
+
+              ARTIFACT="$PWD/app"
+              rm -f "$ARTIFACT"
+
+              native-image \
+                --no-fallback \
+                --enable-url-protocols=http \
+                -H:+ReportExceptionStackTraces \
+                -H:ConfigurationFileDirectories="$CONFIG_DIR" \
+                -jar "$JAR" \
+                app
+
+              if [[ ! -s "$ARTIFACT" ]]; then
+                echo "::error::Http4k native executable was not created"
+                find "$PWD" \
+                  -maxdepth 2 \
+                  -type f \
+                  -printf '%M %s %p\n' |
+                  sort || true
+                exit 1
+              fi
+
+              chmod +x "$ARTIFACT"
+              ;;
+
+            *)
+              echo "::error::Unsupported native framework: ${{ matrix.framework }}"
+              exit 1
+              ;;
+          esac
+
+          if [[ ! -s "$ARTIFACT" ]]; then
+            echo "::error::Native artifact does not exist or is empty"
+            echo "::error::Expected artifact: $ARTIFACT"
+            exit 1
+          fi
+
+          if [[ ! -x "$ARTIFACT" ]]; then
+            echo "::error::Native artifact is not executable"
+            ls -l "$ARTIFACT" || true
+            exit 1
+          fi
+
+          END=$(date +%s%N)
+          BUILD_MS=$(( (END - START) / 1000000 ))
+
+          SIZE_BYTES=$(stat -c%s "$ARTIFACT")
+          SIZE_MB=$(awk -v bytes="$SIZE_BYTES" \
+            'BEGIN { printf "%.2f", bytes / 1024 / 1024 }')
+
+          echo
+          echo "Native executable:"
+          echo "  Artifact:   $ARTIFACT"
+          echo "  Size:       ${SIZE_BYTES} bytes (${SIZE_MB} MB)"
+          echo "  Build time: ${BUILD_MS} ms"
+
+          file "$ARTIFACT" || true
+
+          echo "artifact=$ARTIFACT" >> "$GITHUB_OUTPUT"
+          echo "size_bytes=$SIZE_BYTES" >> "$GITHUB_OUTPUT"
+          echo "size_mb=$SIZE_MB" >> "$GITHUB_OUTPUT"
+          echo "build_ms=$BUILD_MS" >> "$GITHUB_OUTPUT"
+
+      # -----------------------------------------------------------------------
+      # JVM STARTUP AND MEMORY BENCHMARK
+      # -----------------------------------------------------------------------
+
+      - name: Benchmark JVM
+        if: matrix.runtime == 'jvm'
+        id: benchmark_jvm
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FRAMEWORK_DIR="${{ matrix.framework }}"
+          ARTIFACT_RELATIVE="${{ steps.artifact_jvm.outputs.artifact }}"
+          ARTIFACT=$(realpath "${FRAMEWORK_DIR}/${ARTIFACT_RELATIVE}")
+
           CURL_HEADERS=()
 
           case "${{ matrix.framework }}" in
@@ -798,8 +752,39 @@ jobs:
               ;;
           esac
 
-          STARTUP_VALUES=""
-          MEMORY_VALUES=""
+          STARTUP_FILE="$RUNNER_TEMP/startup-values.txt"
+          MEMORY_FILE="$RUNNER_TEMP/memory-values.txt"
+
+          : > "$STARTUP_FILE"
+          : > "$MEMORY_FILE"
+
+          PID=""
+
+          cleanup() {
+            if [[ -n "${PID:-}" ]] && kill -0 "$PID" 2>/dev/null; then
+              kill -TERM "$PID" 2>/dev/null || true
+
+              for _ in $(seq 1 20); do
+                if ! kill -0 "$PID" 2>/dev/null; then
+                  break
+                fi
+                sleep 0.05
+              done
+
+              if kill -0 "$PID" 2>/dev/null; then
+                kill -KILL "$PID" 2>/dev/null || true
+              fi
+            fi
+
+            if [[ -n "${PID:-}" ]]; then
+              wait "$PID" 2>/dev/null || true
+            fi
+
+            fuser -k "${PORT}/tcp" 2>/dev/null || true
+            PID=""
+          }
+
+          trap cleanup EXIT
 
           for RUN in $(seq 1 "$RUNS"); do
             echo
@@ -809,12 +794,15 @@ jobs:
 
             START=$(date +%s%N)
 
-            java -jar "$ARTIFACT" > /tmp/framework.log 2>&1 &
+            (
+              cd "$FRAMEWORK_DIR"
+              exec java -jar "$ARTIFACT"
+            ) > /tmp/framework.log 2>&1 &
 
             PID=$!
             READY=0
             LAST_STATUS="none"
-            START_SECONDS=$(date +%s)
+            DEADLINE=$(( START + STARTUP_TIMEOUT * 1000000000 ))
 
             while true; do
               LAST_STATUS=$(curl \
@@ -822,8 +810,8 @@ jobs:
                 --silent \
                 --output /dev/null \
                 --write-out '%{http_code}' \
-                --connect-timeout 0.1 \
-                --max-time 1 \
+                --connect-timeout 0.05 \
+                --max-time 0.2 \
                 "http://127.0.0.1:${PORT}/greet/John" || true)
 
               if [[ "$LAST_STATUS" == "200" ]]; then
@@ -837,21 +825,19 @@ jobs:
                 break
               fi
 
-              NOW_SECONDS=$(date +%s)
+              NOW=$(date +%s%N)
 
-              if (( NOW_SECONDS - START_SECONDS >= STARTUP_TIMEOUT )); then
+              if (( NOW >= DEADLINE )); then
                 break
               fi
 
-              sleep 0.1
+              sleep 0.005
             done
 
             if [[ "$READY" != "1" ]]; then
               echo "::error::JVM application did not become ready"
               echo "::error::Last HTTP status: ${LAST_STATUS}"
               cat /tmp/framework.log || true
-              kill "$PID" 2>/dev/null || true
-              wait "$PID" 2>/dev/null || true
               exit 1
             fi
 
@@ -861,8 +847,6 @@ jobs:
 
             if [[ -z "$RSS_KB" ]]; then
               echo "::error::Could not read JVM RSS"
-              kill "$PID" 2>/dev/null || true
-              wait "$PID" 2>/dev/null || true
               exit 1
             fi
 
@@ -872,16 +856,14 @@ jobs:
             echo "Startup: ${STARTUP_MS} ms"
             echo "Memory:  ${RSS_MB} MB"
 
-            STARTUP_VALUES="${STARTUP_VALUES}${STARTUP_MS}"$'\n'
-            MEMORY_VALUES="${MEMORY_VALUES}${RSS_MB}"$'\n'
+            echo "$STARTUP_MS" >> "$STARTUP_FILE"
+            echo "$RSS_MB" >> "$MEMORY_FILE"
 
-            kill "$PID" 2>/dev/null || true
-            wait "$PID" 2>/dev/null || true
-            fuser -k "${PORT}/tcp" 2>/dev/null || true
+            cleanup
             sleep 1
           done
 
-          MEDIAN_STARTUP=$(echo "$STARTUP_VALUES" | sort -n | awk '
+          MEDIAN_STARTUP=$(sort -n "$STARTUP_FILE" | awk '
             NF { a[++n]=$1 }
             END {
               if (n % 2)
@@ -891,7 +873,7 @@ jobs:
             }
           ')
 
-          P95_STARTUP=$(echo "$STARTUP_VALUES" | sort -n | awk '
+          P95_STARTUP=$(sort -n "$STARTUP_FILE" | awk '
             NF { a[++n]=$1 }
             END {
               i=int(n*0.95+0.999)
@@ -900,7 +882,7 @@ jobs:
             }
           ')
 
-          MEDIAN_MEMORY=$(echo "$MEMORY_VALUES" | sort -n | awk '
+          MEDIAN_MEMORY=$(sort -n "$MEMORY_FILE" | awk '
             NF { a[++n]=$1 }
             END {
               if (n % 2)
@@ -914,48 +896,74 @@ jobs:
           echo "startup_p95_ms=${P95_STARTUP}" >> "$GITHUB_OUTPUT"
           echo "memory_median_mb=${MEDIAN_MEMORY}" >> "$GITHUB_OUTPUT"
 
+          trap - EXIT
+
       # -----------------------------------------------------------------------
-      # BENCHMARK NATIVE
+      # NATIVE STARTUP AND MEMORY BENCHMARK
+      #
+      # All frameworks, including Spring, run as direct host executables.
       # -----------------------------------------------------------------------
 
       - name: Benchmark Native
         if: matrix.runtime == 'native'
         id: benchmark_native
+        working-directory: ${{ matrix.framework }}
         shell: bash
         run: |
           set -euo pipefail
 
-          IS_CONTAINER=0
+          ARTIFACT="${{ steps.build_native.outputs.artifact }}"
           CURL_HEADERS=()
 
           case "${{ matrix.framework }}" in
             Spring)
-              ARTIFACT="${{ steps.artifact_spring.outputs.image }}"
               CURL_HEADERS=(-H "Accept: text/html")
-              IS_CONTAINER=1
               ;;
             Quarkus)
-              ARTIFACT="${{ steps.artifact_quarkus.outputs.artifact }}"
               CURL_HEADERS=(-H "Content-Type: text/html")
-              ;;
-            Ktor)
-              ARTIFACT="${{ steps.artifact_ktor.outputs.artifact }}"
-              ;;
-            Http4k)
-              ARTIFACT="${{ steps.http4k_native.outputs.artifact }}"
-              ;;
-            *)
-              echo "::error::Unsupported native framework"
-              exit 1
               ;;
           esac
 
-          if [[ "$IS_CONTAINER" != "1" ]]; then
-            chmod +x "$ARTIFACT"
+          if [[ ! -s "$ARTIFACT" ]]; then
+            echo "::error::Native executable does not exist: $ARTIFACT"
+            exit 1
           fi
 
-          STARTUP_VALUES=""
-          MEMORY_VALUES=""
+          chmod +x "$ARTIFACT"
+
+          STARTUP_FILE="$RUNNER_TEMP/startup-values.txt"
+          MEMORY_FILE="$RUNNER_TEMP/memory-values.txt"
+
+          : > "$STARTUP_FILE"
+          : > "$MEMORY_FILE"
+
+          PID=""
+
+          cleanup() {
+            if [[ -n "${PID:-}" ]] && kill -0 "$PID" 2>/dev/null; then
+              kill -TERM "$PID" 2>/dev/null || true
+
+              for _ in $(seq 1 20); do
+                if ! kill -0 "$PID" 2>/dev/null; then
+                  break
+                fi
+                sleep 0.05
+              done
+
+              if kill -0 "$PID" 2>/dev/null; then
+                kill -KILL "$PID" 2>/dev/null || true
+              fi
+            fi
+
+            if [[ -n "${PID:-}" ]]; then
+              wait "$PID" 2>/dev/null || true
+            fi
+
+            fuser -k "${PORT}/tcp" 2>/dev/null || true
+            PID=""
+          }
+
+          trap cleanup EXIT
 
           for RUN in $(seq 1 "$RUNS"); do
             echo
@@ -965,28 +973,13 @@ jobs:
 
             START=$(date +%s%N)
 
-            if [[ "$IS_CONTAINER" == "1" ]]; then
-              CONTAINER_NAME="spring-native-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${RUN}"
+            SERVER_PORT="$PORT" "$ARTIFACT" \
+              > /tmp/framework.log 2>&1 &
 
-              docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
-
-              docker run \
-                --rm \
-                --name "$CONTAINER_NAME" \
-                --network host \
-                --env "SERVER_PORT=${PORT}" \
-                "$ARTIFACT" \
-                > /tmp/framework.log 2>&1 &
-
-              PID=$!
-            else
-              "$ARTIFACT" > /tmp/framework.log 2>&1 &
-              PID=$!
-            fi
-
+            PID=$!
             READY=0
             LAST_STATUS="none"
-            START_SECONDS=$(date +%s)
+            DEADLINE=$(( START + STARTUP_TIMEOUT * 1000000000 ))
 
             while true; do
               LAST_STATUS=$(curl \
@@ -994,8 +987,8 @@ jobs:
                 --silent \
                 --output /dev/null \
                 --write-out '%{http_code}' \
-                --connect-timeout 0.1 \
-                --max-time 1 \
+                --connect-timeout 0.05 \
+                --max-time 0.2 \
                 "http://127.0.0.1:${PORT}/greet/John" || true)
 
               if [[ "$LAST_STATUS" == "200" ]]; then
@@ -1009,61 +1002,28 @@ jobs:
                 break
               fi
 
-              NOW_SECONDS=$(date +%s)
+              NOW=$(date +%s%N)
 
-              if (( NOW_SECONDS - START_SECONDS >= STARTUP_TIMEOUT )); then
+              if (( NOW >= DEADLINE )); then
                 break
               fi
 
-              sleep 0.1
+              sleep 0.005
             done
 
             if [[ "$READY" != "1" ]]; then
               echo "::error::Native application did not become ready"
               echo "::error::Last HTTP status: ${LAST_STATUS}"
               cat /tmp/framework.log || true
-
-              if [[ "$IS_CONTAINER" == "1" ]]; then
-                docker logs "$CONTAINER_NAME" 2>/dev/null || true
-                docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
-              else
-                kill "$PID" 2>/dev/null || true
-              fi
-
-              wait "$PID" 2>/dev/null || true
               exit 1
             fi
 
             sleep 2
 
-            if [[ "$IS_CONTAINER" == "1" ]]; then
-              HOST_PID=$(docker inspect \
-                --format '{{.State.Pid}}' \
-                "$CONTAINER_NAME" 2>/dev/null || true)
-
-              if [[ -z "$HOST_PID" || "$HOST_PID" == "0" ]]; then
-                echo "::error::Could not determine Spring container process"
-                docker logs "$CONTAINER_NAME" 2>/dev/null || true
-                docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
-                wait "$PID" 2>/dev/null || true
-                exit 1
-              fi
-
-              RSS_KB=$(ps -o rss= -p "$HOST_PID" | tr -d ' ')
-            else
-              RSS_KB=$(ps -o rss= -p "$PID" | tr -d ' ')
-            fi
+            RSS_KB=$(ps -o rss= -p "$PID" | tr -d ' ')
 
             if [[ -z "$RSS_KB" ]]; then
               echo "::error::Could not read native RSS"
-
-              if [[ "$IS_CONTAINER" == "1" ]]; then
-                docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
-              else
-                kill "$PID" 2>/dev/null || true
-              fi
-
-              wait "$PID" 2>/dev/null || true
               exit 1
             fi
 
@@ -1073,21 +1033,14 @@ jobs:
             echo "Startup: ${STARTUP_MS} ms"
             echo "Memory:  ${RSS_MB} MB"
 
-            STARTUP_VALUES="${STARTUP_VALUES}${STARTUP_MS}"$'\n'
-            MEMORY_VALUES="${MEMORY_VALUES}${RSS_MB}"$'\n'
+            echo "$STARTUP_MS" >> "$STARTUP_FILE"
+            echo "$RSS_MB" >> "$MEMORY_FILE"
 
-            if [[ "$IS_CONTAINER" == "1" ]]; then
-              docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
-            else
-              kill "$PID" 2>/dev/null || true
-            fi
-
-            wait "$PID" 2>/dev/null || true
-            fuser -k "${PORT}/tcp" 2>/dev/null || true
+            cleanup
             sleep 1
           done
 
-          MEDIAN_STARTUP=$(echo "$STARTUP_VALUES" | sort -n | awk '
+          MEDIAN_STARTUP=$(sort -n "$STARTUP_FILE" | awk '
             NF { a[++n]=$1 }
             END {
               if (n % 2)
@@ -1097,7 +1050,7 @@ jobs:
             }
           ')
 
-          P95_STARTUP=$(echo "$STARTUP_VALUES" | sort -n | awk '
+          P95_STARTUP=$(sort -n "$STARTUP_FILE" | awk '
             NF { a[++n]=$1 }
             END {
               i=int(n*0.95+0.999)
@@ -1106,7 +1059,7 @@ jobs:
             }
           ')
 
-          MEDIAN_MEMORY=$(echo "$MEMORY_VALUES" | sort -n | awk '
+          MEDIAN_MEMORY=$(sort -n "$MEMORY_FILE" | awk '
             NF { a[++n]=$1 }
             END {
               if (n % 2)
@@ -1120,20 +1073,19 @@ jobs:
           echo "startup_p95_ms=${P95_STARTUP}" >> "$GITHUB_OUTPUT"
           echo "memory_median_mb=${MEDIAN_MEMORY}" >> "$GITHUB_OUTPUT"
 
+          trap - EXIT
+
       # -----------------------------------------------------------------------
       # HTTP LATENCY BENCHMARK
       # -----------------------------------------------------------------------
 
       - name: HTTP latency benchmark
-        if: matrix.runtime == 'jvm' || matrix.runtime == 'native'
         id: http
         shell: bash
         run: |
           set -euo pipefail
 
           CURL_HEADERS=()
-          IS_CONTAINER=0
-          CONTAINER_NAME=""
 
           case "${{ matrix.framework }}" in
             Spring)
@@ -1147,67 +1099,38 @@ jobs:
           rm -f /tmp/framework.log
 
           if [[ "${{ matrix.runtime }}" == "jvm" ]]; then
-            ARTIFACT="${{ steps.artifact_jvm.outputs.artifact }}"
+            FRAMEWORK_DIR="${{ matrix.framework }}"
+            ARTIFACT_RELATIVE="${{ steps.artifact_jvm.outputs.artifact }}"
+            ARTIFACT=$(realpath "${FRAMEWORK_DIR}/${ARTIFACT_RELATIVE}")
 
             (
-              cd "${{ matrix.framework }}"
-              java -jar "$ARTIFACT"
+              cd "$FRAMEWORK_DIR"
+              exec java -jar "$ARTIFACT"
             ) > /tmp/framework.log 2>&1 &
-
-            PID=$!
           else
-            case "${{ matrix.framework }}" in
-              Spring)
-                ARTIFACT="${{ steps.artifact_spring.outputs.image }}"
-                CONTAINER_NAME="spring-native-http-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            ARTIFACT="${{ steps.build_native.outputs.artifact }}"
+            chmod +x "$ARTIFACT"
 
-                docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
-
-                docker run \
-                  --rm \
-                  --name "$CONTAINER_NAME" \
-                  --network host \
-                  --env "SERVER_PORT=${PORT}" \
-                  "$ARTIFACT" \
-                  > /tmp/framework.log 2>&1 &
-
-                PID=$!
-                IS_CONTAINER=1
-                ;;
-
-              Quarkus)
-                ARTIFACT="${{ steps.artifact_quarkus.outputs.artifact }}"
-                chmod +x "$ARTIFACT"
-                "$ARTIFACT" > /tmp/framework.log 2>&1 &
-                PID=$!
-                ;;
-
-              Ktor)
-                ARTIFACT="${{ steps.artifact_ktor.outputs.artifact }}"
-                chmod +x "$ARTIFACT"
-                "$ARTIFACT" > /tmp/framework.log 2>&1 &
-                PID=$!
-                ;;
-
-              Http4k)
-                ARTIFACT="${{ steps.http4k_native.outputs.artifact }}"
-                chmod +x "$ARTIFACT"
-                "$ARTIFACT" > /tmp/framework.log 2>&1 &
-                PID=$!
-                ;;
-
-              *)
-                echo "::error::Unsupported native framework"
-                exit 1
-                ;;
-            esac
+            SERVER_PORT="$PORT" "$ARTIFACT" \
+              > /tmp/framework.log 2>&1 &
           fi
 
+          PID=$!
+
           cleanup() {
-            if [[ "$IS_CONTAINER" == "1" ]]; then
-              docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
-            else
-              kill "$PID" 2>/dev/null || true
+            if kill -0 "$PID" 2>/dev/null; then
+              kill -TERM "$PID" 2>/dev/null || true
+
+              for _ in $(seq 1 20); do
+                if ! kill -0 "$PID" 2>/dev/null; then
+                  break
+                fi
+                sleep 0.05
+              done
+
+              if kill -0 "$PID" 2>/dev/null; then
+                kill -KILL "$PID" 2>/dev/null || true
+              fi
             fi
 
             wait "$PID" 2>/dev/null || true
@@ -1218,7 +1141,8 @@ jobs:
 
           READY=0
           LAST_STATUS="none"
-          START_SECONDS=$(date +%s)
+          START=$(date +%s%N)
+          DEADLINE=$(( START + STARTUP_TIMEOUT * 1000000000 ))
 
           while true; do
             LAST_STATUS=$(curl \
@@ -1226,8 +1150,8 @@ jobs:
               --silent \
               --output /dev/null \
               --write-out '%{http_code}' \
-              --connect-timeout 0.1 \
-              --max-time 1 \
+              --connect-timeout 0.05 \
+              --max-time 0.2 \
               "http://127.0.0.1:${PORT}/greet/John" || true)
 
             if [[ "$LAST_STATUS" == "200" ]]; then
@@ -1239,28 +1163,24 @@ jobs:
               break
             fi
 
-            NOW_SECONDS=$(date +%s)
+            NOW=$(date +%s%N)
 
-            if (( NOW_SECONDS - START_SECONDS >= STARTUP_TIMEOUT )); then
+            if (( NOW >= DEADLINE )); then
               break
             fi
 
-            sleep 0.1
+            sleep 0.005
           done
 
           if [[ "$READY" != "1" ]]; then
             echo "::error::Application did not become ready"
             echo "::error::Last HTTP status: ${LAST_STATUS}"
             cat /tmp/framework.log || true
-
-            if [[ "$IS_CONTAINER" == "1" ]]; then
-              docker logs "$CONTAINER_NAME" 2>/dev/null || true
-            fi
-
             exit 1
           fi
 
-          for i in $(seq 1 20); do
+          # Warm-up requests.
+          for _ in $(seq 1 20); do
             curl \
               "${CURL_HEADERS[@]}" \
               --silent \
@@ -1269,21 +1189,21 @@ jobs:
               "http://127.0.0.1:${PORT}/greet/John"
           done
 
-          VALUES=""
+          VALUES_FILE="$RUNNER_TEMP/http-values.txt"
+          : > "$VALUES_FILE"
 
-          for i in $(seq 1 100); do
-            TIME_SECONDS=$(curl \
+          for _ in $(seq 1 100); do
+            curl \
               "${CURL_HEADERS[@]}" \
               --silent \
               --fail \
               --output /dev/null \
-              --write-out '%{time_total}' \
-              "http://127.0.0.1:${PORT}/greet/John")
-
-            VALUES="${VALUES}${TIME_SECONDS}"$'\n'
+              --write-out '%{time_total}\n' \
+              "http://127.0.0.1:${PORT}/greet/John" \
+              >> "$VALUES_FILE"
           done
 
-          AVG_MS=$(echo "$VALUES" | awk '
+          AVG_MS=$(awk '
             NF {
               sum += $1
               count++
@@ -1292,15 +1212,15 @@ jobs:
               if (count > 0)
                 printf "%.3f", (sum/count) * 1000
               else
-                printf "0.000"
+                exit 1
             }
-          ')
+          ' "$VALUES_FILE")
 
-          MEDIAN_MS=$(echo "$VALUES" | sort -n | awk '
+          MEDIAN_MS=$(sort -n "$VALUES_FILE" | awk '
             NF { a[++n]=$1 }
             END {
               if (n == 0)
-                printf "0.000"
+                exit 1
               else if (n % 2)
                 printf "%.3f", a[(n+1)/2] * 1000
               else
@@ -1308,16 +1228,15 @@ jobs:
             }
           ')
 
-          P95_MS=$(echo "$VALUES" | sort -n | awk '
+          P95_MS=$(sort -n "$VALUES_FILE" | awk '
             NF { a[++n]=$1 }
             END {
-              if (n == 0) {
-                printf "0.000"
-              } else {
-                i=int(n*0.95+0.999)
-                if (i<1) i=1
-                printf "%.3f", a[i] * 1000
-              }
+              if (n == 0)
+                exit 1
+
+              i=int(n*0.95+0.999)
+              if (i<1) i=1
+              printf "%.3f", a[i] * 1000
             }
           ')
 
@@ -1348,60 +1267,86 @@ jobs:
           RUNTIME="${{ matrix.runtime }}"
 
           if [[ "$RUNTIME" == "jvm" ]]; then
-            BUILD="${{ steps.build_jvm.outputs.build_ms || 0 }}"
-            ARTIFACT="${{ steps.artifact_jvm.outputs.size_mb || 0 }}"
-            STARTUP="${{ steps.benchmark_jvm.outputs.startup_median_ms || 0 }}"
-            STARTUP_P95="${{ steps.benchmark_jvm.outputs.startup_p95_ms || 0 }}"
-            MEMORY="${{ steps.benchmark_jvm.outputs.memory_median_mb || 0 }}"
+            BUILD='${{ steps.build_jvm.outputs.build_ms || 'null' }}'
+            ARTIFACT='${{ steps.artifact_jvm.outputs.size_mb || 'null' }}'
+            STARTUP='${{ steps.benchmark_jvm.outputs.startup_median_ms || 'null' }}'
+            STARTUP_P95='${{ steps.benchmark_jvm.outputs.startup_p95_ms || 'null' }}'
+            MEMORY='${{ steps.benchmark_jvm.outputs.memory_median_mb || 'null' }}'
           else
-            BUILD="${{ steps.build_native.outputs.build_ms || 0 }}"
-            STARTUP="${{ steps.benchmark_native.outputs.startup_median_ms || 0 }}"
-            STARTUP_P95="${{ steps.benchmark_native.outputs.startup_p95_ms || 0 }}"
-            MEMORY="${{ steps.benchmark_native.outputs.memory_median_mb || 0 }}"
-
-            case "$FRAMEWORK" in
-              Spring)
-                ARTIFACT="${{ steps.artifact_spring.outputs.size_mb || 0 }}"
-                ;;
-              Quarkus)
-                ARTIFACT="${{ steps.artifact_quarkus.outputs.size_mb || 0 }}"
-                ;;
-              Ktor)
-                ARTIFACT="${{ steps.artifact_ktor.outputs.size_mb || 0 }}"
-                ;;
-              Http4k)
-                ARTIFACT="${{ steps.http4k_native.outputs.size_mb || 0 }}"
-                ;;
-              *)
-                ARTIFACT="0"
-                ;;
-            esac
+            BUILD='${{ steps.build_native.outputs.build_ms || 'null' }}'
+            ARTIFACT='${{ steps.build_native.outputs.size_mb || 'null' }}'
+            STARTUP='${{ steps.benchmark_native.outputs.startup_median_ms || 'null' }}'
+            STARTUP_P95='${{ steps.benchmark_native.outputs.startup_p95_ms || 'null' }}'
+            MEMORY='${{ steps.benchmark_native.outputs.memory_median_mb || 'null' }}'
           fi
 
-          HTTP_AVG="${{ steps.http.outputs.avg_ms || 0 }}"
-          HTTP_MEDIAN="${{ steps.http.outputs.median_ms || 0 }}"
-          HTTP_P95="${{ steps.http.outputs.p95_ms || 0 }}"
+          HTTP_AVG='${{ steps.http.outputs.avg_ms || 'null' }}'
+          HTTP_MEDIAN='${{ steps.http.outputs.median_ms || 'null' }}'
+          HTTP_P95='${{ steps.http.outputs.p95_ms || 'null' }}'
 
-          cat > "results/${FRAMEWORK}-${RUNTIME}.json" <<EOF
-          {
-            "framework": "$FRAMEWORK",
-            "runtime": "$RUNTIME",
-            "commit": "${GITHUB_SHA}",
-            "run_id": "${GITHUB_RUN_ID}",
-            "run_number": "${GITHUB_RUN_NUMBER}",
-            "runner": "${RUNNER_OS}",
-            "java_version": "${JAVA_VERSION}",
-            "measurements": ${RUNS},
-            "build_time_ms": ${BUILD},
-            "artifact_size_mb": ${ARTIFACT},
-            "startup_median_ms": ${STARTUP},
-            "startup_p95_ms": ${STARTUP_P95},
-            "memory_median_mb": ${MEMORY},
-            "http_average_ms": ${HTTP_AVG},
-            "http_median_ms": ${HTTP_MEDIAN},
-            "http_p95_ms": ${HTTP_P95}
-          }
-          EOF
+          STATUS="success"
+
+          for VALUE in \
+            "$BUILD" \
+            "$ARTIFACT" \
+            "$STARTUP" \
+            "$STARTUP_P95" \
+            "$MEMORY" \
+            "$HTTP_AVG" \
+            "$HTTP_MEDIAN" \
+            "$HTTP_P95"; do
+            if [[ "$VALUE" == "null" || -z "$VALUE" ]]; then
+              STATUS="failed"
+              break
+            fi
+          done
+
+          jq -n \
+            --arg framework "$FRAMEWORK" \
+            --arg runtime "$RUNTIME" \
+            --arg status "$STATUS" \
+            --arg commit "$GITHUB_SHA" \
+            --arg run_id "$GITHUB_RUN_ID" \
+            --arg run_number "$GITHUB_RUN_NUMBER" \
+            --arg runner_os "$RUNNER_OS" \
+            --arg runner_arch "$RUNNER_ARCH" \
+            --arg image_os "${ImageOS:-unknown}" \
+            --arg image_version "${ImageVersion:-unknown}" \
+            --arg java_version "$JAVA_VERSION" \
+            --argjson measurements "$RUNS" \
+            --argjson build_time_ms "$BUILD" \
+            --argjson artifact_size_mb "$ARTIFACT" \
+            --argjson startup_median_ms "$STARTUP" \
+            --argjson startup_p95_ms "$STARTUP_P95" \
+            --argjson memory_median_mb "$MEMORY" \
+            --argjson http_average_ms "$HTTP_AVG" \
+            --argjson http_median_ms "$HTTP_MEDIAN" \
+            --argjson http_p95_ms "$HTTP_P95" \
+            '{
+              framework: $framework,
+              runtime: $runtime,
+              status: $status,
+              commit: $commit,
+              run_id: $run_id,
+              run_number: $run_number,
+              runner: {
+                os: $runner_os,
+                architecture: $runner_arch,
+                image_os: $image_os,
+                image_version: $image_version
+              },
+              java_version: $java_version,
+              measurements: $measurements,
+              build_time_ms: $build_time_ms,
+              artifact_size_mb: $artifact_size_mb,
+              startup_median_ms: $startup_median_ms,
+              startup_p95_ms: $startup_p95_ms,
+              memory_median_mb: $memory_median_mb,
+              http_average_ms: $http_average_ms,
+              http_median_ms: $http_median_ms,
+              http_p95_ms: $http_p95_ms
+            }' \
+            > "results/${FRAMEWORK}-${RUNTIME}.json"
 
           cat "results/${FRAMEWORK}-${RUNTIME}.json"
 
@@ -1414,17 +1359,19 @@ jobs:
           retention-days: 30
           if-no-files-found: error
 
-      - name: Cleanup Spring native image
-        if: always() && matrix.runtime == 'native' && matrix.framework == 'Spring'
+      - name: Cleanup
+        if: always()
         shell: bash
         run: |
-          set -euo pipefail
+          set +e
+
+          fuser -k "${PORT}/tcp" 2>/dev/null || true
 
           docker ps -aq \
             --filter "ancestor=$SPRING_NATIVE_IMAGE" |
-            xargs -r docker rm -f || true
+            xargs -r docker rm -f
 
-          docker image rm -f "$SPRING_NATIVE_IMAGE" || true
+          docker image rm -f "$SPRING_NATIVE_IMAGE" 2>/dev/null || true
 
   # ===========================================================================
   # REPORT
@@ -1433,6 +1380,7 @@ jobs:
   report:
     name: Generate benchmark report
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: benchmark
     if: always()
 
@@ -1451,7 +1399,10 @@ jobs:
 
           mkdir -p reports
 
-          jq -s '.' downloaded/*.json > reports/results.json
+          jq -s \
+            'sort_by(.framework, .runtime)' \
+            downloaded/*.json \
+            > reports/results.json
 
           cat > reports/results.md <<EOF
           # Web Framework Benchmark
@@ -1462,19 +1413,36 @@ jobs:
 
           **Measurements per runtime:** ${RUNS}
 
-          > For Spring Native, artifact size represents the complete container
-          > image size. For the other native runtimes, it represents the native
-          > executable size.
+          > All native artifact sizes represent native executable sizes.
+          > Spring's native executable is extracted from its Buildpacks image
+          > and run directly, without Docker startup overhead.
+
+          > A failed or unavailable measurement is shown as **FAILED** and is
+          > represented as \`null\` in the JSON results.
 
           ## Results
 
-          | Framework | Runtime | Build | Artifact | Startup median | Startup P95 | Memory median | HTTP avg | HTTP P95 |
-          |---|---|---:|---:|---:|---:|---:|---:|---:|
+          | Framework | Runtime | Status | Build | Artifact | Startup median | Startup P95 | Memory median | HTTP avg | HTTP P95 |
+          |---|---|---|---:|---:|---:|---:|---:|---:|---:|
           EOF
 
           jq -r '
-            sort_by(.framework, .runtime)[] |
-            "| \(.framework) | \(.runtime) | \(.build_time_ms) ms | \(.artifact_size_mb) MB | \(.startup_median_ms) ms | \(.startup_p95_ms) ms | \(.memory_median_mb) MB | \(.http_average_ms) ms | \(.http_p95_ms) ms |"
+            def measurement($value; $unit):
+              if $value == null then
+                "**FAILED**"
+              else
+                "\($value) \($unit)"
+              end;
+
+            .[] |
+            "| \(.framework) | \(.runtime) | \(.status) | " +
+            "\(measurement(.build_time_ms; "ms")) | " +
+            "\(measurement(.artifact_size_mb; "MB")) | " +
+            "\(measurement(.startup_median_ms; "ms")) | " +
+            "\(measurement(.startup_p95_ms; "ms")) | " +
+            "\(measurement(.memory_median_mb; "MB")) | " +
+            "\(measurement(.http_average_ms; "ms")) | " +
+            "\(measurement(.http_p95_ms; "ms")) |"
           ' reports/results.json >> reports/results.md
 
           cat reports/results.md
@@ -1483,7 +1451,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           cat reports/results.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload benchmark results artifact
