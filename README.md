@@ -1,83 +1,57 @@
-# Web-Framework comparison
+# Web-Framework Comparison
 
-Reactive-Frameworks helps Developers to build WebServices for Container-based environments like ☸ Kubernetes or ⚡ Serverless Runtimes.<br/>
-Nowadays many good Frameworks exists ([Spring](https://spring.io), [Quarkus](https://quarkus.io), [Ktor](https://ktor.io), [Http4k](https://www.http4k.org) ...) which needs to be compared in relation to work requirements.<br/>
-<br/>
-Beside criteria like 📝 Licence, 🕑 Release frequency, 🙋 Support and 🌎 Ecosystem comparison for 💪 performance matters.<br/>
-<br/>
-<br/>
-This comparison shows the different startup-performance 🏃 with a common simple Web-Service App that contains of:<br/>
-❤ **Awesome Kotlin** Leverage the best JVM language that exists<br/>
-⚡ **Reactive** Powerful non-blocking programming model<br/>
-🧾 **JSON support** Support for JSON marshaling<br/>
-🎈 **Native** Compilation to native executable - no need for JVM<br/>
-🌎 **Container** Run everywhere due to light docker container distribution<br/>
-<br/>
-<br/>
-Native build compilation was done with GraalVM 22.<br/>
-Non-Native JVM build compilation and runtime was done with OpenJDK 17.0.1 (Adoptium) on my Acer Aspire ES1-572 (4 Core x 2,5GHz, 16GB RAM, Windows 11, x64).<br/>
-No application configuration or JVM performance tuning has been applied.<br/>
+ Reactive frameworks help developers build web services for container-based environments such as ☸ Kubernetes and ⚡ serverless runtimes.
 
-<table>
-<thead>
-<tr>
-<th>Framework</th>
-<th>Version</th>
-<th>Uber Jar size</th>
-<th>Container image size</th>
-<th>Startup time (JVM)</th>
-<th>Memory consumption (JVM)</th>
-<th>Startup time (Native)</th>
-<th>Memory consumption (Native)*</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Http4k</td>
-<td>4.25.16.2</td>
-<td>8.95 MB</td>
-<td>41.50 MB</td>
-<td>239 ms</td>
-<td>26.6 MB</td>
-<td>6.4 ms</td>
-<td>2.86 MB</td>
-</tr>
-<tr>
-<td>Ktor</td>
-<td>2.0.1</td>
-<td>10.60 MB</td>
-<td>57.1 MB</td>
-<td>551.4 ms</td>
-<td>42.86 MB</td>
-<td>11.6 ms</td>
-<td>13.18 MB</td>
-</tr>
-<tr>
-<td>Quarkus</td>
-<td>2.9.2</td>
-<td>14.50 MB</td>
-<td>71.80 MB</td>
-<td>1717.2 ms</td>
-<td>66.98 MB</td>
-<td>50.6 ms</td>
-<td>22.06 MB</td>
-</tr>
-<tr>
-<td>Spring</td>
-<td>2.7.0</td>
-<td>25.60 MB</td>
-<td>96.9 MB</td>
-<td>5535 ms</td>
-<td>195.56 MB</td>
-<td>147.2 ms</td>
-<td>33.72 MB</td>
-</tr>
-</tbody>
-</table>
-* Without sending requests to the Application<br/>
-<br/>
-<br/>
-Check out the sub directories to build and run the sample application your own:<br/>
+ Today, there are many mature frameworks available, including [Spring](<https://spring.io>), [Quarkus](<https://quarkus.io>), [Ktor](<https://ktor.io>), and [Http4k](<https://www.http4k.org>). Choosing between them depends on many factors, including 📝 licensing, 🕑 release frequency, 🙋 support, 🌎 ecosystem, and — especially for containerized workloads — 💪 performance.
+
+ This project compares the runtime characteristics of **Http4k, Ktor, Quarkus, and Spring** using the same simple web-service application.
+
+ ## What is being compared?
+
+ Each implementation provides the following:
+
+ - ❤️ **Kotlin** — Leverage the capabilities of Kotlin on the JVM and in native applications
+- ⚡ **Reactive / non-blocking** — Support for efficient request processing
+- 🧾 **JSON support** — JSON serialization and deserialization
+- 🎈 **Native** — Compilation to a native executable without requiring a JVM at runtime
+- 🌎 **Container** — Suitable for container-based deployment
+
+ The benchmark compares both **JVM** and **native** builds, looking at:
+
+ - Build time
+- Artifact size
+- Application startup time
+- Memory consumption
+- HTTP request latency
+
+ ## Test Environment
+
+ All tests were executed on the same **GitHub-hosted standard x64 runner**:
+
+ - **CPU:** 4 vCPU
+- **Memory:** 16 GB RAM
+- **OS:** Ubuntu
+- **Runner:** `ubuntu-latest`
+- **Architecture:** x64
+
+ Using the same hosted runner for all implementations provides a consistent environment for comparing the frameworks.
+
+ ## Results
+
+| Framework | Runtime | Status | Build | Artifact | Startup median | Startup P95 | Memory median | HTTP avg | HTTP P95 |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|
+| Http4k | jvm | success | 58333 ms | 8.98 MB | 645 ms | 693 ms | 95.64 MB | 1.066 ms | 1.474 ms |
+| Http4k | native | success | 135862 ms | 34.15 MB | 19 ms | 19 ms | 38.55 MB | 0.322 ms | 0.371 ms |
+| Ktor | jvm | success | 56080 ms | 10.69 MB | 444 ms | 471 ms | 83.87 MB | 1.621 ms | 2.319 ms |
+| Ktor | native | success | 139216 ms | 46.60 MB | 23 ms | 23 ms | 37.59 MB | 0.587 ms | 0.658 ms |
+| Quarkus | jvm | success | 66382 ms | 14.54 MB | 898 ms | 953 ms | 118.67 MB | 1.317 ms | 1.624 ms |
+| Quarkus | native | success | 162283 ms | 38.99 MB | 18 ms | 20 ms | 37.19 MB | 0.353 ms | 0.402 ms |
+| Spring | jvm | success | 77874 ms | 25.69 MB | 3110 ms | 3252 ms | 227.91 MB | 1.579 ms | 1.995 ms |
+| Spring | native | success | 282513 ms | 73.04 MB | 55 ms | 62 ms | 89.82 MB | 0.475 ms | 0.630 ms |
+
+ ## Sample Applications
+
+ Check out the subdirectories to build and run each sample application yourself:
 
 * **[Spring](Spring)**<br/>
 * **[Quarkus](Quarkus)**<br/>
