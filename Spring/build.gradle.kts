@@ -47,11 +47,8 @@ tasks.withType<KotlinCompile>().configureEach {
 }
 
 tasks.named<BootBuildImage>("bootBuildImage") {
-    builder.set("paketobuildpacks/builder:tiny")
-
-    environment.set(
-        mapOf(
-            "BP_NATIVE_IMAGE" to "true"
-        )
+    builder = "paketobuildpacks/builder:tiny"
+    environment = mapOf(
+        "BP_NATIVE_IMAGE" to "true"
     )
 }
