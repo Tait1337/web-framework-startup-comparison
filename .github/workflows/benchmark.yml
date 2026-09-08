@@ -305,21 +305,53 @@ jobs:
 
           case "${{ matrix.framework }}" in
             Spring)
+              # Benchmark the regular Spring Boot JVM application.
+              # The *-aot.jar is an intermediate native-build artifact and
+              # cannot be started using java -jar.
               ARTIFACT=$(find build/libs \
+                -maxdepth 1 \
                 -type f \
                 -name "*.jar" \
-                ! -name "*plain.jar" \
+                ! -name "*-aot.jar" \
+                ! -name "*-plain.jar" \
+                ! -name "*-sources.jar" \
+                ! -name "*-javadoc.jar" \
                 -print \
                 -quit)
 
               if [[ -z "${ARTIFACT:-}" || ! -f "$ARTIFACT" ]]; then
-                echo "::error::Could not find Spring JVM artifact"
-                find build -type f | sort
+                echo "::error::Could not find normal Spring Boot JVM artifact"
+                find build/libs \
+                  -maxdepth 1 \
+                  -type f \
+                  -name "*.jar" \
+                  -printf '%s %p\n' |
+                  sort || true
+                exit 1
+              fi
+
+              MANIFEST=$(unzip -p "$ARTIFACT" META-INF/MANIFEST.MF)
+
+              if ! grep -qE \
+                '^Main-Class: org\.springframework\.boot\.loader\.' \
+                <<< "$MANIFEST"; then
+                echo "::error::Spring JVM artifact is not an executable Boot JAR"
+                echo "::error::Artifact: $ARTIFACT"
+                echo
+                echo "$MANIFEST"
+                exit 1
+              fi
+
+              if ! grep -q '^Start-Class:' <<< "$MANIFEST"; then
+                echo "::error::Spring JVM artifact has no Start-Class"
+                echo "::error::Artifact: $ARTIFACT"
+                echo
+                echo "$MANIFEST"
                 exit 1
               fi
 
               SIZE_BYTES=$(stat -c%s "$ARTIFACT")
-              SIZE_DESCRIPTION="$ARTIFACT"
+              SIZE_DESCRIPTION="$ARTIFACT (regular executable Spring Boot JAR)"
               ;;
 
             Quarkus)
