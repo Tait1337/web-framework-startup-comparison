@@ -1,8 +1,8 @@
 plugins {
     application
-    kotlin("jvm") version "1.6.21"
-    kotlin("plugin.serialization") version "1.6.21"
-    id("com.github.johnrengelman.shadow") version "7.1.2"
+    kotlin("jvm") version "2.4.20"
+        kotlin("plugin.serialization") version "2.4.20"
+    id("com.gradleup.shadow") version "9.6.1"
 }
 
 application {
@@ -17,17 +17,15 @@ repositories {
 }
 
 dependencies {
-    implementation("ch.qos.logback:logback-classic:1.2.11")
-    implementation("io.ktor:ktor-server-cio:2.0.1")
-    implementation("io.ktor:ktor-server-content-negotiation:2.0.1")
-    implementation("io.ktor:ktor-serialization-kotlinx-json:2.0.1")
-    implementation("org.jetbrains.kotlinx:kotlinx-datetime-jvm:0.3.3")
+    implementation("ch.qos.logback:logback-classic:1.6.3")
+    implementation("io.ktor:ktor-server-cio:3.6.0")
+        implementation("io.ktor:ktor-server-content-negotiation:3.6.0")
+        implementation("io.ktor:ktor-serialization-kotlinx-json:3.6.0")
+        implementation("org.jetbrains.kotlinx:kotlinx-datetime:0.8.0")
 }
 
-tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
-    kotlinOptions {
-        jvmTarget = "17"
-    }
+kotlin {
+    jvmToolchain(17)
 }
 
 tasks.shadowJar {

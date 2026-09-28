@@ -1,9 +1,9 @@
 package com.example
 
 import java.time.LocalDateTime
-import javax.enterprise.context.Dependent
-import javax.ws.rs.core.MediaType
-import javax.ws.rs.core.Response
+import jakarta.enterprise.context.Dependent
+import jakarta.ws.rs.core.MediaType
+import jakarta.ws.rs.core.Response
 
 @Dependent
 class Handler {
