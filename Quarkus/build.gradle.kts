@@ -1,25 +1,23 @@
 plugins {
-	id("io.quarkus") version "2.9.2.Final"
-	kotlin("jvm") version "1.6.21"
+	id("io.quarkus") version "3.39.5"
+		kotlin("plugin.allopen") version "2.4.20"
+		kotlin("jvm") version "2.4.20"
 }
 
 group = "com.example"
 version = "0.0.1-SNAPSHOT"
-java.sourceCompatibility = JavaVersion.VERSION_17
-
 repositories {
 	mavenCentral()
 }
 
-dependencies {
-	implementation(enforcedPlatform("io.quarkus:quarkus-universe-bom:2.9.2.Final"))
-	implementation("io.quarkus:quarkus-arc")
-	implementation("io.quarkus:quarkus-resteasy-reactive")
-	implementation("io.quarkus:quarkus-resteasy-reactive-jsonb")
+kotlin {
+	jvmToolchain(17)
 }
 
-tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
-	kotlinOptions {
-		jvmTarget = "17"
-	}
+dependencies {
+	implementation(enforcedPlatform("io.quarkus:quarkus-universe-bom:3.39.5"))
+	implementation("io.quarkus:quarkus-arc")
+		implementation("io.quarkus:quarkus-rest")
+		implementation("jakarta.ws.rs:jakarta.ws.rs-api:4.0.0")
+		implementation("jakarta.inject:jakarta.inject-api:2.0.1")
 }
