@@ -345,24 +345,32 @@ jobs:
 
               trap cleanup_spring_extraction EXIT
 
+              echo
+              echo "Creating temporary Spring native image container..."
+
+              # docker create does NOT start the container. This is important
+              # because minimal native images may not contain /bin/sh.
               docker create \
                 --name "$CONTAINER_NAME" \
                 "$SPRING_NATIVE_IMAGE" \
                 >/dev/null
+
+              echo "Exporting Spring native image filesystem..."
 
               docker export "$CONTAINER_NAME" |
                 tar -xf - -C "$ROOTFS"
 
               echo
               echo "Inspecting extracted Spring native image filesystem..."
-              
+
+              echo
               echo "Root filesystem:"
               find "$ROOTFS" \
                 -maxdepth 2 \
                 -type d \
                 -print |
                 sort
-              
+
               echo
               echo "Executable files:"
               find "$ROOTFS" \
@@ -370,7 +378,7 @@ jobs:
                 -perm /111 \
                 -printf '%s %p\n' |
                 sort -nr
-              
+
               echo
               echo "Native executables:"
               find "$ROOTFS" \
@@ -379,6 +387,97 @@ jobs:
                 -exec file {} \; |
                 grep -Ei 'ELF.*executable|ELF.*pie' || true
 
+              # ---------------------------------------------------------------
+              # FIND ACTUAL SPRING ELF EXECUTABLE
+              #
+              # The Buildpacks image may be distroless/minimal and therefore
+              # may not contain /bin/sh. We inspect the exported filesystem
+              # directly instead of trying to execute anything inside it.
+              # ---------------------------------------------------------------
+
+              echo
+              echo "========================================"
+              echo "Locating Spring native ELF executable"
+              echo "========================================"
+
+              SPRING_EXECUTABLE=""
+
+              mapfile -t ELF_CANDIDATES < <(
+                find "$ROOTFS" \
+                  -type f \
+                  -perm /111 \
+                  -print0 |
+                  while IFS= read -r -d '' candidate; do
+                    if file "$candidate" 2>/dev/null |
+                      grep -Eq 'ELF.*executable|ELF.*pie executable'; then
+                      printf '%s\n' "$candidate"
+                    fi
+                  done
+              )
+
+              echo "ELF executable candidates found: ${#ELF_CANDIDATES[@]}"
+
+              if (( ${#ELF_CANDIDATES[@]} > 0 )); then
+                for candidate in "${ELF_CANDIDATES[@]}"; do
+                  echo
+                  echo "Candidate:"
+                  echo "  Path: $candidate"
+                  echo "  File: $(file "$candidate")"
+                  echo "  Size: $(stat -c%s "$candidate") bytes"
+                done
+              fi
+
+              if (( ${#ELF_CANDIDATES[@]} == 0 )); then
+                echo
+                echo "::error::Could not locate a native ELF executable in the extracted Spring image"
+
+                echo
+                echo "All executable files:"
+                find "$ROOTFS" \
+                  -type f \
+                  -perm /111 \
+                  -printf '%M %s %p\n' |
+                  sort -nr || true
+
+                echo
+                echo "All ELF files:"
+                find "$ROOTFS" \
+                  -type f \
+                  -exec file {} \; |
+                  grep -Ei 'ELF' || true
+
+                exit 1
+              fi
+
+              if (( ${#ELF_CANDIDATES[@]} > 1 )); then
+                echo
+                echo "::error::Multiple native ELF executables were found in the Spring image"
+                echo "::error::The benchmark requires an unambiguous application executable"
+                echo
+                printf '  %s\n' "${ELF_CANDIDATES[@]}"
+
+                exit 1
+              fi
+
+              SPRING_EXECUTABLE="${ELF_CANDIDATES[0]}"
+
+              if [[ ! -f "$SPRING_EXECUTABLE" ]]; then
+                echo "::error::Selected Spring executable does not exist"
+                echo "::error::Path: $SPRING_EXECUTABLE"
+                exit 1
+              fi
+
+              echo
+              echo "Selected Spring native executable:"
+              echo "  $SPRING_EXECUTABLE"
+              echo
+              echo "Executable details:"
+              file "$SPRING_EXECUTABLE"
+              stat "$SPRING_EXECUTABLE"
+
+              # ---------------------------------------------------------------
+              # COPY THE NATIVE EXECUTABLE OUT OF THE EXTRACTED IMAGE
+              # ---------------------------------------------------------------
 
               ARTIFACT="$PWD/app"
 
@@ -386,11 +485,28 @@ jobs:
               cp "$SPRING_EXECUTABLE" "$ARTIFACT"
               chmod +x "$ARTIFACT"
 
+              if [[ ! -s "$ARTIFACT" ]]; then
+                echo "::error::Extracted Spring native executable is empty"
+                exit 1
+              fi
+
+              if [[ ! -x "$ARTIFACT" ]]; then
+                echo "::error::Extracted Spring native executable is not executable"
+                ls -l "$ARTIFACT" || true
+                exit 1
+              fi
+
               echo
               echo "Extracted Spring native executable:"
-              echo "Source:   $SPRING_EXECUTABLE"
-              echo "Artifact: $ARTIFACT"
+              echo "  Source:   $SPRING_EXECUTABLE"
+              echo "  Artifact: $ARTIFACT"
+
+              echo
+              echo "Host executable details:"
               file "$ARTIFACT" || true
+
+              echo
+              echo "Host dynamic dependencies:"
               ldd "$ARTIFACT" || true
 
               cleanup_spring_extraction
@@ -1381,12 +1497,16 @@ jobs:
 
           fuser -k "${PORT}/tcp" 2>/dev/null || true
 
-          docker ps -aq \
-            --filter "ancestor=$SPRING_NATIVE_IMAGE" |
-            xargs -r docker rm -f
+          if [[ "${{ matrix.framework }}" == "Spring" &&
+                "${{ matrix.runtime }}" == "native" ]]; then
 
-          docker image rm -f "$SPRING_NATIVE_IMAGE" \
-            >/dev/null 2>&1 || true
+            docker ps -aq \
+              --filter "ancestor=$SPRING_NATIVE_IMAGE" |
+              xargs -r docker rm -f
+
+            docker image rm -f "$SPRING_NATIVE_IMAGE" \
+              >/dev/null 2>&1 || true
+          fi
 
   # ===========================================================================
   # REPORT
