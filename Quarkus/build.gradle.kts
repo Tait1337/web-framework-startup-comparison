@@ -11,13 +11,13 @@ repositories {
 }
 
 kotlin {
-	jvmToolchain(17)
+	jvmToolchain(25)
 }
 
 dependencies {
 	implementation(enforcedPlatform("io.quarkus:quarkus-universe-bom:3.39.5"))
 	implementation("io.quarkus:quarkus-arc")
-		implementation("io.quarkus:quarkus-rest")
-		implementation("jakarta.ws.rs:jakarta.ws.rs-api:4.0.0")
-		implementation("jakarta.inject:jakarta.inject-api:2.0.1")
+	implementation("io.quarkus:quarkus-rest")
+	implementation("jakarta.ws.rs:jakarta.ws.rs-api:4.0.0")
+	implementation("jakarta.inject:jakarta.inject-api:2.0.1")
 }
