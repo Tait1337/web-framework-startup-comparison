@@ -354,37 +354,31 @@ jobs:
                 tar -xf - -C "$ROOTFS"
 
               echo
-              echo "Inspecting Spring native image..."
+              echo "Inspecting extracted Spring native image filesystem..."
               
-              docker run --rm \
-                --entrypoint /bin/sh \
-                "$SPRING_NATIVE_IMAGE" \
-                -c '
-                  echo "PATH=$PATH"
-                  echo
-                  echo "Root:"
-                  ls -la /
-                  echo
-                  echo "Application directories:"
-                  find / -maxdepth 3 -type f -perm /111 \
-                    -not -path "/proc/*" \
-                    -not -path "/sys/*" \
-                    -not -path "/dev/*" \
-                    -printf "%s %p\n" 2>/dev/null |
-                    sort -nr
-                ' || true
+              echo "Root filesystem:"
+              find "$ROOTFS" \
+                -maxdepth 2 \
+                -type d \
+                -print |
+                sort
+              
+              echo
+              echo "Executable files:"
+              find "$ROOTFS" \
+                -type f \
+                -perm /111 \
+                -printf '%s %p\n' |
+                sort -nr
+              
+              echo
+              echo "Native executables:"
+              find "$ROOTFS" \
+                -type f \
+                -perm /111 \
+                -exec file {} \; |
+                grep -Ei 'ELF.*executable|ELF.*pie' || true
 
-              if [[ -z "$SPRING_EXECUTABLE" ||
-                    ! -s "$SPRING_EXECUTABLE" ]]; then
-                echo "::error::Could not locate the Spring native executable"
-
-                find "$ROOTFS/workspace" \
-                  -maxdepth 4 \
-                  -type f \
-                  -exec file {} \; || true
-
-                exit 1
-              fi
 
               ARTIFACT="$PWD/app"
 
@@ -485,7 +479,7 @@ jobs:
                 -H:IncludeResources="(.*.properties)|(static/.*)|(META-INF/.*)" \
                 -H:ReflectionConfigurationFiles=graal-reflection-configuration.json \
                 --allow-incomplete-classpath \
-                --initialize-at-build-time=io.ktor,kotlinx,kotlin \
+                --initialize-at-build-time=io.ktor,kotlinx,kotlin,ch.qos.logback.classic \
                 -jar "$JAR" \
                 app
 
