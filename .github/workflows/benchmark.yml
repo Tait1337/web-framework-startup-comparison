@@ -327,12 +327,6 @@ jobs:
               native-image --version
 
               echo
-              echo "Gradle nativeCompile task graph:"
-              ./gradlew nativeCompile \
-                --dry-run \
-                "${GRADLE_FLAGS[@]}"
-
-              echo
               echo "Building Spring native executable..."
 
               ./gradlew clean nativeCompile \
