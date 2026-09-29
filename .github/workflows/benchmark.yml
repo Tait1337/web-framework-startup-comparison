@@ -500,6 +500,7 @@ jobs:
 
               native-image \
                 --no-fallback \
+                --libc=musl \
                 --static \
                 --enable-url-protocols=http \
                 -H:+ReportExceptionStackTraces \
@@ -657,8 +658,8 @@ jobs:
                 -printf '%M %s %p\n' |
                 sort || true
 
-              if [[ ! -f "$CONFIG_DIR/reflect-config.json" ]]; then
-                echo "::error::The native-image agent did not generate reflect-config.json"
+              if [[ ! -f "$CONFIG_DIR/reachability-metadata.json" ]]; then
+                echo "::error::The native-image agent did not generate reachability-metadata.json"
                 cat "$AGENT_LOG" || true
                 exit 1
               fi
