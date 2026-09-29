@@ -15,7 +15,7 @@ application {
 }
 
 kotlin {
-    jvmToolchain(21)
+    jvmToolchain(25)
 }
 
 dependencies {
@@ -23,8 +23,8 @@ dependencies {
     implementation(kotlin("reflect"))
     implementation(platform("org.http4k:http4k-bom:6.60.0.0"))
     implementation("org.http4k:http4k-core")
-        implementation("org.http4k", "http4k-server-apache", "6.60.0.0")
-        implementation("org.http4k", "http4k-format-jackson", "6.60.0.0")
+    implementation("org.http4k", "http4k-server-apache", "6.60.0.0")
+    implementation("org.http4k", "http4k-format-jackson", "6.60.0.0")
     implementation("io.github.microutils", "kotlin-logging", "2.1.23")
     implementation("org.slf4j", "slf4j-simple", "2.0.19")
 
