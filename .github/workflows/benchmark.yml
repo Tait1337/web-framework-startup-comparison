@@ -354,46 +354,25 @@ jobs:
                 tar -xf - -C "$ROOTFS"
 
               echo
-              echo "Executable candidates in the Spring image workspace:"
-
-              find "$ROOTFS/workspace" \
-                -maxdepth 3 \
-                -type f \
-                -perm /111 \
-                -printf '%s %p\n' |
-                sort -nr || true
-
-              SPRING_EXECUTABLE=""
-
-              while IFS= read -r CANDIDATE; do
-                if [[ -z "$CANDIDATE" ]]; then
-                  continue
-                fi
-
-                DESCRIPTION=$(file -b "$CANDIDATE" || true)
-                BASENAME=$(basename "$CANDIDATE")
-
-                echo "Candidate: $CANDIDATE"
-                echo "Type:      $DESCRIPTION"
-
-                if [[ "$BASENAME" == *.so || "$BASENAME" == *.so.* ]]; then
-                  continue
-                fi
-
-                if grep -qE 'ELF .*(executable|pie executable)' \
-                  <<< "$DESCRIPTION"; then
-                  SPRING_EXECUTABLE="$CANDIDATE"
-                  break
-                fi
-              done < <(
-                find "$ROOTFS/workspace" \
-                  -maxdepth 3 \
-                  -type f \
-                  -perm /111 \
-                  -printf '%s\t%p\n' |
-                  sort -nr |
-                  cut -f2-
-              )
+              echo "Inspecting Spring native image..."
+              
+              docker run --rm \
+                --entrypoint /bin/sh \
+                "$SPRING_NATIVE_IMAGE" \
+                -c '
+                  echo "PATH=$PATH"
+                  echo
+                  echo "Root:"
+                  ls -la /
+                  echo
+                  echo "Application directories:"
+                  find / -maxdepth 3 -type f -perm /111 \
+                    -not -path "/proc/*" \
+                    -not -path "/sys/*" \
+                    -not -path "/dev/*" \
+                    -printf "%s %p\n" 2>/dev/null |
+                    sort -nr
+                ' || true
 
               if [[ -z "$SPRING_EXECUTABLE" ||
                     ! -s "$SPRING_EXECUTABLE" ]]; then
@@ -500,8 +479,7 @@ jobs:
 
               native-image \
                 --no-fallback \
-                --libc=musl \
-                --static \
+                --libc=glibc \
                 --enable-url-protocols=http \
                 -H:+ReportExceptionStackTraces \
                 -H:IncludeResources="(.*.properties)|(static/.*)|(META-INF/.*)" \
