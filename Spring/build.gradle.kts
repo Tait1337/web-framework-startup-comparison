@@ -25,7 +25,6 @@ java {
 }
 
 repositories {
-        maven { url = uri("https://repo.spring.io/release") }
         mavenCentral()
 }
 
@@ -37,19 +36,12 @@ dependencies {
         implementation("org.jetbrains.kotlinx:kotlinx-coroutines-reactor")
 }
 
-tasks.withType<KotlinCompile>().configureEach {
-        compilerOptions {
-            freeCompilerArgs = listOf("-Xjsr305=strict")
-            jvmTarget.set(JvmTarget.JVM_25)
-        }
+kotlin {
+  compilerOptions {
+    freeCompilerArgs.addAll("-Xjsr305=strict", "-Xannotation-default-target=param-property")
+  }
 }
 
-tasks.withType<BootBuildImage>().configureEach {
-        builder = System.getenv("SPRING_NATIVE_BUILDER")
-            ?: "docker.io/paketobuildpacks/builder-jammy-tiny:latest"
-
-        environment = mapOf(
-            "BP_NATIVE_IMAGE" to "false",
-            "BP_JVM_VERSION" to "25"
-        )
+tasks.withType<Test> {
+  useJUnitPlatform()
 }
