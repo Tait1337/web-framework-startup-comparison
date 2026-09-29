@@ -595,7 +595,7 @@ jobs:
                 -H:IncludeResources="(.*.properties)|(static/.*)|(META-INF/.*)" \
                 -H:ReflectionConfigurationFiles=graal-reflection-configuration.json \
                 --allow-incomplete-classpath \
-                --initialize-at-build-time=io.ktor,kotlinx,kotlin,ch.qos.logback.classic \
+                --initialize-at-build-time=io.ktor,kotlinx,kotlin,ch.qos.logback.classic,ch.qos.logback.classic.Logger \
                 -jar "$JAR" \
                 app
 
