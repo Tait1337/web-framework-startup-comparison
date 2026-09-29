@@ -579,76 +579,6 @@ jobs:
                 exit 1
               fi
 
-
-
-
-
-            echo
-            echo "========================================"
-            echo "Ktor JAR diagnostics"
-            echo "========================================"
-            
-            echo "JAR: $JAR"
-            
-            echo
-            echo "Manifest:"
-            unzip -p "$JAR" META-INF/MANIFEST.MF
-            
-            echo
-            echo "Main-Class:"
-            MAIN_CLASS=$(
-              unzip -p "$JAR" META-INF/MANIFEST.MF |
-                awk -F': ' 'tolower($1) == "main-class" { print $2; exit }' |
-                tr -d '\r'
-            )
-            
-            printf '<%s>\n' "$MAIN_CLASS"
-            
-            if [[ -z "$MAIN_CLASS" ]]; then
-              echo "::error::No Main-Class in Ktor fat JAR"
-              exit 1
-            fi
-            
-            echo
-            echo "Testing JAR:"
-            java -jar "$JAR" &
-            TEST_PID=$!
-            
-            sleep 3
-            
-            if ! kill -0 "$TEST_PID" 2>/dev/null; then
-              echo "::error::Ktor JAR exited during startup"
-              wait "$TEST_PID" || true
-              exit 1
-            fi
-            
-            kill "$TEST_PID" || true
-            wait "$TEST_PID" 2>/dev/null || true
-            
-            echo
-            echo "Building native executable..."
-            
-            native-image \
-              --no-fallback \
-              --libc=glibc \
-              --enable-url-protocols=http \
-              -H:+ReportExceptionStackTraces \
-              -H:IncludeResources="(.*.properties)|(static/.*)|(META-INF/.*)" \
-              -H:ReflectionConfigurationFiles=graal-reflection-configuration.json \
-              --initialize-at-build-time=io.ktor,kotlinx,kotlin \
-              --initialize-at-build-time=ch.qos.logback.classic.Logger \
-              --initialize-at-build-time=ch.qos.logback.classic.LoggerContext \
-              --initialize-at-build-time=ch.qos.logback.core.spi.AppenderAttachableImpl \
-              --initialize-at-build-time=ch.qos.logback.classic.util.LogbackMDCAdapter \
-              --initialize-at-build-time=ch.qos.logback.classic.spi.TurboFilterList \
-              --initialize-at-build-time=ch.qos.logback.classic.spi.LoggerContextVO \
-              --initialize-at-build-time=ch.qos.logback.core.BasicStatusManager \
-              -jar "$JAR" \
-              app
-
-
-
-
               echo
               echo "========================================"
               echo "Building Ktor native executable"
@@ -664,14 +594,7 @@ jobs:
                 -H:+ReportExceptionStackTraces \
                 -H:IncludeResources="(.*.properties)|(static/.*)|(META-INF/.*)" \
                 -H:ReflectionConfigurationFiles=graal-reflection-configuration.json \
-                --initialize-at-build-time=io.ktor,kotlinx,kotlin \
-                --initialize-at-build-time=ch.qos.logback.classic.Logger \
-                --initialize-at-build-time=ch.qos.logback.classic.LoggerContext \
-                --initialize-at-build-time=ch.qos.logback.core.spi.AppenderAttachableImpl \
-                --initialize-at-build-time=ch.qos.logback.classic.util.LogbackMDCAdapter \
-                --initialize-at-build-time=ch.qos.logback.classic.spi.TurboFilterList \
-                --initialize-at-build-time=ch.qos.logback.classic.spi.LoggerContextVO \
-                --initialize-at-build-time=ch.qos.logback.core.BasicStatusManager
+                --initialize-at-build-time=io.ktor,kotlinx,kotlin,ch.qos.logback \
                 -jar "$JAR" \
                 app
 
