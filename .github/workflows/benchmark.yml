@@ -12,7 +12,6 @@ env:
   PORT: "8080"
   RUNS: "7"
   STARTUP_TIMEOUT: "120"
-  SPRING_NATIVE_IMAGE: "benchmark-spring-native:${{ github.run_id }}-${{ github.run_attempt }}"
 
 jobs:
   benchmark:
@@ -59,13 +58,12 @@ jobs:
           distribution: temurin
           java-version: ${{ env.JAVA_VERSION }}
 
-      # Spring obtains GraalVM from its Cloud Native Buildpacks builder.
-      # Quarkus uses its own native-image builder container.
+      # GraalVM is required by nativeCompile/native-image.
+      #
+      # Quarkus performs its native build inside its own container, so it
+      # does not need the host GraalVM installation here.
       - name: Setup GraalVM
-        if: >-
-          matrix.runtime == 'native' &&
-          matrix.framework != 'Quarkus' &&
-          matrix.framework != 'Spring'
+        if: matrix.runtime == 'native' && matrix.framework != 'Quarkus'
         uses: graalvm/setup-graalvm@v1
         with:
           java-version: ${{ env.GRAALVM_VERSION }}
@@ -291,8 +289,14 @@ jobs:
       # -----------------------------------------------------------------------
       # NATIVE BUILD
       #
-      # The entire Http4k native build, including agent configuration and the
-      # native-image invocation, is included in the measured build time.
+      # Spring:
+      #   ./gradlew nativeCompile
+      #
+      # This directly produces the native executable under:
+      #   build/native/nativeCompile/
+      #
+      # No Spring Boot Buildpacks image is created and no Docker extraction
+      # is required.
       # -----------------------------------------------------------------------
 
       - name: Build Native
@@ -315,202 +319,69 @@ jobs:
           case "${{ matrix.framework }}" in
             Spring)
               echo "========================================"
-              echo "Building Spring native container image"
-              echo "Image: $SPRING_NATIVE_IMAGE"
+              echo "Building Spring native executable"
               echo "========================================"
 
-              ./gradlew clean bootBuildImage \
-                --imageName="$SPRING_NATIVE_IMAGE" \
+              echo
+              echo "GraalVM:"
+              native-image --version
+
+              echo
+              echo "Gradle nativeCompile task graph:"
+              ./gradlew nativeCompile \
+                --dry-run \
                 "${GRADLE_FLAGS[@]}"
 
-              if ! docker image inspect "$SPRING_NATIVE_IMAGE" \
-                >/dev/null 2>&1; then
-                echo "::error::Spring native container image was not created"
-                echo "::error::Expected image: $SPRING_NATIVE_IMAGE"
-                docker image ls
-                exit 1
-              fi
+              echo
+              echo "Building Spring native executable..."
 
-              ROOTFS="$RUNNER_TEMP/spring-native-rootfs"
-              CONTAINER_NAME="spring-native-extract-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-
-              rm -rf "$ROOTFS"
-              mkdir -p "$ROOTFS"
-
-              docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
-
-              cleanup_spring_extraction() {
-                docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
-              }
-
-              trap cleanup_spring_extraction EXIT
+              ./gradlew clean nativeCompile \
+                "${GRADLE_FLAGS[@]}"
 
               echo
-              echo "Creating temporary Spring native image container..."
-
-              # docker create does NOT start the container. This is important
-              # because minimal native images may not contain /bin/sh.
-              docker create \
-                --name "$CONTAINER_NAME" \
-                "$SPRING_NATIVE_IMAGE" \
-                >/dev/null
-
-              echo "Exporting Spring native image filesystem..."
-
-              docker export "$CONTAINER_NAME" |
-                tar -xf - -C "$ROOTFS"
-
-              echo
-              echo "Inspecting extracted Spring native image filesystem..."
-
-              echo
-              echo "Root filesystem:"
-              find "$ROOTFS" \
+              echo "Spring native output:"
+              find build/native/nativeCompile \
                 -maxdepth 2 \
-                -type d \
-                -print |
-                sort
+                -type f \
+                -printf '%M %s %p\n' |
+                sort || true
 
-              echo
-              echo "Executable files:"
-              find "$ROOTFS" \
+              ARTIFACT=$(find build/native/nativeCompile \
+                -maxdepth 1 \
                 -type f \
                 -perm /111 \
-                -printf '%s %p\n' |
-                sort -nr
+                -print \
+                -quit)
 
-              echo
-              echo "Native executables:"
-              find "$ROOTFS" \
-                -type f \
-                -perm /111 \
-                -exec file {} \; |
-                grep -Ei 'ELF.*executable|ELF.*pie' || true
-
-              # ---------------------------------------------------------------
-              # FIND ACTUAL SPRING ELF EXECUTABLE
-              #
-              # The Buildpacks image may be distroless/minimal and therefore
-              # may not contain /bin/sh. We inspect the exported filesystem
-              # directly instead of trying to execute anything inside it.
-              # ---------------------------------------------------------------
-
-              echo
-              echo "========================================"
-              echo "Locating Spring native ELF executable"
-              echo "========================================"
-
-              SPRING_EXECUTABLE=""
-
-              mapfile -t ELF_CANDIDATES < <(
-                find "$ROOTFS" \
-                  -type f \
-                  -perm /111 \
-                  -print0 |
-                  while IFS= read -r -d '' candidate; do
-                    if file "$candidate" 2>/dev/null |
-                      grep -Eq 'ELF.*executable|ELF.*pie executable'; then
-                      printf '%s\n' "$candidate"
-                    fi
-                  done
-              )
-
-              echo "ELF executable candidates found: ${#ELF_CANDIDATES[@]}"
-
-              if (( ${#ELF_CANDIDATES[@]} > 0 )); then
-                for candidate in "${ELF_CANDIDATES[@]}"; do
-                  echo
-                  echo "Candidate:"
-                  echo "  Path: $candidate"
-                  echo "  File: $(file "$candidate")"
-                  echo "  Size: $(stat -c%s "$candidate") bytes"
-                done
-              fi
-
-              if (( ${#ELF_CANDIDATES[@]} == 0 )); then
-                echo
-                echo "::error::Could not locate a native ELF executable in the extracted Spring image"
+              if [[ -z "${ARTIFACT:-}" || ! -f "$ARTIFACT" ]]; then
+                echo "::error::Could not find Spring native executable"
+                echo "::error::Expected executable under build/native/nativeCompile/"
 
                 echo
-                echo "All executable files:"
-                find "$ROOTFS" \
+                echo "All files below build/native:"
+                find build/native \
                   -type f \
-                  -perm /111 \
                   -printf '%M %s %p\n' |
-                  sort -nr || true
-
-                echo
-                echo "All ELF files:"
-                find "$ROOTFS" \
-                  -type f \
-                  -exec file {} \; |
-                  grep -Ei 'ELF' || true
+                  sort || true
 
                 exit 1
               fi
 
-              if (( ${#ELF_CANDIDATES[@]} > 1 )); then
-                echo
-                echo "::error::Multiple native ELF executables were found in the Spring image"
-                echo "::error::The benchmark requires an unambiguous application executable"
-                echo
-                printf '  %s\n' "${ELF_CANDIDATES[@]}"
-
-                exit 1
-              fi
-
-              SPRING_EXECUTABLE="${ELF_CANDIDATES[0]}"
-
-              if [[ ! -f "$SPRING_EXECUTABLE" ]]; then
-                echo "::error::Selected Spring executable does not exist"
-                echo "::error::Path: $SPRING_EXECUTABLE"
-                exit 1
-              fi
-
-              echo
-              echo "Selected Spring native executable:"
-              echo "  $SPRING_EXECUTABLE"
-              echo
-              echo "Executable details:"
-              file "$SPRING_EXECUTABLE"
-              stat "$SPRING_EXECUTABLE"
-
-              # ---------------------------------------------------------------
-              # COPY THE NATIVE EXECUTABLE OUT OF THE EXTRACTED IMAGE
-              # ---------------------------------------------------------------
-
-              ARTIFACT="$PWD/app"
-
-              rm -f "$ARTIFACT"
-              cp "$SPRING_EXECUTABLE" "$ARTIFACT"
+              ARTIFACT=$(realpath "$ARTIFACT")
               chmod +x "$ARTIFACT"
 
-              if [[ ! -s "$ARTIFACT" ]]; then
-                echo "::error::Extracted Spring native executable is empty"
-                exit 1
-              fi
-
-              if [[ ! -x "$ARTIFACT" ]]; then
-                echo "::error::Extracted Spring native executable is not executable"
-                ls -l "$ARTIFACT" || true
-                exit 1
-              fi
+              echo
+              echo "Spring native executable:"
+              echo "  $ARTIFACT"
 
               echo
-              echo "Extracted Spring native executable:"
-              echo "  Source:   $SPRING_EXECUTABLE"
-              echo "  Artifact: $ARTIFACT"
-
-              echo
-              echo "Host executable details:"
-              file "$ARTIFACT" || true
+              echo "Executable details:"
+              file "$ARTIFACT"
+              stat "$ARTIFACT"
 
               echo
               echo "Host dynamic dependencies:"
               ldd "$ARTIFACT" || true
-
-              cleanup_spring_extraction
-              trap - EXIT
               ;;
 
             Quarkus)
@@ -586,7 +457,7 @@ jobs:
 
               native-image --version
               rm -f app
-              
+
               native-image \
                 --no-fallback \
                 --libc=glibc \
@@ -996,9 +867,6 @@ jobs:
 
       # -----------------------------------------------------------------------
       # NATIVE STARTUP AND MEMORY BENCHMARK
-      #
-      # Spring is run as an extracted host executable rather than through
-      # Docker, making startup and RSS measurements more comparable.
       # -----------------------------------------------------------------------
 
       - name: Benchmark Native
@@ -1496,17 +1364,6 @@ jobs:
 
           fuser -k "${PORT}/tcp" 2>/dev/null || true
 
-          if [[ "${{ matrix.framework }}" == "Spring" &&
-                "${{ matrix.runtime }}" == "native" ]]; then
-
-            docker ps -aq \
-              --filter "ancestor=$SPRING_NATIVE_IMAGE" |
-              xargs -r docker rm -f
-
-            docker image rm -f "$SPRING_NATIVE_IMAGE" \
-              >/dev/null 2>&1 || true
-          fi
-
   # ===========================================================================
   # REPORT
   # ===========================================================================
@@ -1548,8 +1405,8 @@ jobs:
           **Measurements per runtime:** ${RUNS}
 
           > All native artifact sizes represent native executable sizes.
-          > Spring's executable is extracted from its Buildpacks image and run
-          > directly without Docker startup overhead.
+          > Spring is built directly with GraalVM Native Build Tools using
+          > the Gradle \`nativeCompile\` task.
 
           > Missing or failed measurements are represented as \`null\` in JSON
           > and displayed as **FAILED** below.
