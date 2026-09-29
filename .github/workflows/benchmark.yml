@@ -594,7 +594,7 @@ jobs:
                 -H:+ReportExceptionStackTraces \
                 -H:IncludeResources="(.*.properties)|(static/.*)|(META-INF/.*)" \
                 -H:ReflectionConfigurationFiles=graal-reflection-configuration.json \
-                --initialize-at-build-time=io.ktor,kotlinx,kotlin,ch.qos.logback \
+                --initialize-at-build-time=io.ktor,kotlinx,kotlin,ch.qos.logback,org.slf4j \
                 -jar "$JAR" \
                 app
 
