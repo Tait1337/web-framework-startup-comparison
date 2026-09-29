@@ -40,14 +40,14 @@
 
 | Framework | Runtime | Status | Build | Artifact | Startup median | Startup P95 | Memory median | HTTP avg | HTTP P95 |
 |---|---|---|---:|---:|---:|---:|---:|---:|---:|
-| Http4k | jvm | success | 58333 ms | 8.98 MB | 645 ms | 693 ms | 95.64 MB | 1.066 ms | 1.474 ms |
-| Http4k | native | success | 135862 ms | 34.15 MB | 19 ms | 19 ms | 38.55 MB | 0.322 ms | 0.371 ms |
-| Ktor | jvm | success | 56080 ms | 10.69 MB | 444 ms | 471 ms | 83.87 MB | 1.621 ms | 2.319 ms |
-| Ktor | native | success | 139216 ms | 46.60 MB | 23 ms | 23 ms | 37.59 MB | 0.587 ms | 0.658 ms |
-| Quarkus | jvm | success | 66382 ms | 14.54 MB | 898 ms | 953 ms | 118.67 MB | 1.317 ms | 1.624 ms |
-| Quarkus | native | success | 162283 ms | 38.99 MB | 18 ms | 20 ms | 37.19 MB | 0.353 ms | 0.402 ms |
-| Spring | jvm | success | 77874 ms | 25.69 MB | 3110 ms | 3252 ms | 227.91 MB | 1.579 ms | 1.995 ms |
-| Spring | native | success | 282513 ms | 73.04 MB | 55 ms | 62 ms | 89.82 MB | 0.475 ms | 0.630 ms |
+| Http4k | jvm | success | 57009 ms | 10.30 MB | 875 ms | 951 ms | 131.62 MB | 1.308 ms | 1.758 ms |
+| Http4k | native | success | 91466 ms | 36.50 MB | 17 ms | 17 ms | 51.91 MB | 0.210 ms | 0.252 ms |
+| Ktor | jvm | success | 49856 ms | 15.71 MB | 600 ms | 639 ms | 109.66 MB | 1.529 ms | 2.524 ms |
+| Ktor | native | success | 171268 ms | 48.00 MB | 12 ms | 25 ms | 41.34 MB | 0.637 ms | 0.748 ms |
+| Quarkus | jvm | success | 74021 ms | 17.64 MB | 938 ms | 1049 ms | 118.36 MB | 1.305 ms | 1.706 ms |
+| Quarkus | native | success | 213429 ms | 47.25 MB | 39 ms | 41 ms | 48.88 MB | 0.395 ms | 0.455 ms |
+| Spring | jvm | success | 82635 ms | 43.46 MB | 2704 ms | 3292 ms | 221.15 MB | 1.674 ms | 2.213 ms |
+| Spring | native | success | 171814 ms | 129.69 MB | 55 ms | 57 ms | 117.46 MB | 0.249 ms | 0.283 ms |
 
  ## Sample Applications
 
