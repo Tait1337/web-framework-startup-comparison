@@ -594,11 +594,14 @@ jobs:
                 -H:+ReportExceptionStackTraces \
                 -H:IncludeResources="(.*.properties)|(static/.*)|(META-INF/.*)" \
                 -H:ReflectionConfigurationFiles=graal-reflection-configuration.json \
-                --allow-incomplete-classpath \
                 --initialize-at-build-time=io.ktor,kotlinx,kotlin \
                 --initialize-at-build-time=ch.qos.logback.classic.Logger \
                 --initialize-at-build-time=ch.qos.logback.classic.LoggerContext \
                 --initialize-at-build-time=ch.qos.logback.core.spi.AppenderAttachableImpl \
+                --initialize-at-build-time=ch.qos.logback.classic.util.LogbackMDCAdapter \
+                --initialize-at-build-time=ch.qos.logback.classic.spi.TurboFilterList \
+                --initialize-at-build-time=ch.qos.logback.classic.spi.LoggerContextVO \
+                --initialize-at-build-time=ch.qos.logback.core.BasicStatusManager
                 -jar "$JAR" \
                 app
 
